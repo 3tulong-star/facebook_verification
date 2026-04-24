@@ -34,6 +34,7 @@
   </div>
 
   <div id="status" style="margin-top: 16px;"></div>
+  <pre id="errorBox" style="margin-top:12px; white-space:pre-wrap; color:#b42318; background:#fff5f5; padding:12px; border:1px solid #f5c2c7; display:none;"></pre>
   <div id="summary" style="margin-top: 12px;"></div>
   <div id="results"></div>
 
@@ -45,6 +46,7 @@
     const statusEl = document.getElementById('status');
     const summaryEl = document.getElementById('summary');
     const resultsEl = document.getElementById('results');
+    const errorBox = document.getElementById('errorBox');
 
     let es = null;
     let rows = [];
@@ -104,6 +106,8 @@
       rows = [];
       resultsEl.innerHTML = '';
       summaryEl.innerHTML = '';
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
       statusEl.textContent = '准备开始...';
       runBtn.disabled = true;
       stopBtn.disabled = false;
@@ -120,20 +124,32 @@
       es.addEventListener('result', (e) => {
         const data = JSON.parse(e.data);
         rows.push(data.result);
-        renderSummary(data.summary, `进度: ${rows.length}`);
+        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
         renderTable();
         statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
       });
 
       es.addEventListener('done', (e) => {
         const data = JSON.parse(e.data);
-        renderSummary(data.summary, `进度: ${data.results.length} / ${data.results.length}`);
+        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
         statusEl.textContent = '检测完成';
         cleanupStream();
       });
 
       es.addEventListener('error', (e) => {
-        statusEl.textContent = '流式检测异常或连接结束';
+        let message = '流式连接异常';
+        try {
+          if (e.data) {
+            const data = JSON.parse(e.data);
+            message = data.error || message;
+            if (data.summary && data.progress) {
+              renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+            }
+          }
+        } catch {}
+        errorBox.style.display = 'block';
+        errorBox.textContent = message;
+        statusEl.textContent = '流式检测异常';
         cleanupStream();
       });
     });

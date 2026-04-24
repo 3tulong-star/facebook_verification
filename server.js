@@ -162,13 +162,17 @@ app.get('/api/check-stream', async (req, res) => {
   res.flushHeaders();
 
   let browser = null;
+  let clientClosed = false;
+  let completed = false;
   const results = [];
   const send = (event, data) => {
+    if (clientClosed) return;
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
   req.on('close', async () => {
+    clientClosed = true;
     if (browser) {
       await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
     }
@@ -179,6 +183,8 @@ app.get('/api/check-stream', async (req, res) => {
     send('start', { total: phones.length });
 
     for (let i = 0; i < phones.length; i++) {
+      if (clientClosed) break;
+
       if (i > 0 && i % 5 === 0) {
         await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
         browser = await chromium.launch({ headless: true });
@@ -186,21 +192,42 @@ app.get('/api/check-stream', async (req, res) => {
 
       const result = { index: i + 1, ...(await checkPhone(browser, phones[i])) };
       results.push(result);
-      send('result', { result, summary: createSummary(results) });
+      send('result', { result, summary: createSummary(results), progress: { current: i + 1, total: phones.length } });
 
       if (i < phones.length - 1) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
 
-    send('done', { summary: createSummary(results), results });
-    res.end();
+    if (!clientClosed) {
+      completed = true;
+      send('done', { summary: createSummary(results), results, progress: { current: results.length, total: phones.length } });
+      res.end();
+    }
   } catch (e) {
-    send('error', { error: String(e && e.stack ? e.stack : e), summary: createSummary(results), results });
-    res.end();
+    if (!clientClosed) {
+      send('error', {
+        error: String(e && e.stack ? e.stack : e),
+        summary: createSummary(results),
+        results,
+        progress: { current: results.length, total: phones.length }
+      });
+      res.end();
+    }
   } finally {
     if (browser) {
       await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
+    }
+    if (!completed && !clientClosed) {
+      try {
+        send('error', {
+          error: 'Stream ended unexpectedly without done event',
+          summary: createSummary(results),
+          results,
+          progress: { current: results.length, total: phones.length }
+        });
+        res.end();
+      } catch {}
     }
   }
 });
