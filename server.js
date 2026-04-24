@@ -2,13 +2,14 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
+import XLSX from 'xlsx';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 function normalizePhones(text) {
@@ -43,6 +44,20 @@ function withTimeout(promise, ms, label) {
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT: ${label} exceeded ${ms}ms`)), ms))
   ]);
+}
+
+function createSummary(results) {
+  return {
+    total: results.length,
+    hasFb: results.filter(r => r.status === 'HAS_FB').length,
+    noFb: results.filter(r => r.status === 'NO_FB').length,
+    unknown: results.filter(r => r.status === 'UNKNOWN').length,
+    error: results.filter(r => r.status === 'ERROR').length,
+  };
+}
+
+async function createBrowser() {
+  return chromium.launch({ headless: true });
 }
 
 async function checkPhone(browser, phone) {
@@ -83,6 +98,7 @@ async function checkPhone(browser, phone) {
       title,
       finalUrl,
       error: null,
+      checkedAt: new Date().toISOString(),
     };
   } catch (e) {
     return {
@@ -92,6 +108,7 @@ async function checkPhone(browser, phone) {
       title,
       finalUrl,
       error: String(e && e.stack ? e.stack : e),
+      checkedAt: new Date().toISOString(),
     };
   } finally {
     if (context) {
@@ -100,56 +117,55 @@ async function checkPhone(browser, phone) {
   }
 }
 
-function createSummary(results) {
-  return {
-    total: results.length,
-    hasFb: results.filter(r => r.status === 'HAS_FB').length,
-    noFb: results.filter(r => r.status === 'NO_FB').length,
-    unknown: results.filter(r => r.status === 'UNKNOWN').length,
-    error: results.filter(r => r.status === 'ERROR').length,
-  };
+async function runChecks({ phones, delayMs = 2000, concurrency = 1, onResult }) {
+  const results = new Array(phones.length);
+  const workers = [];
+  let nextIndex = 0;
+
+  for (let w = 0; w < concurrency; w++) {
+    workers.push((async () => {
+      let browser = await createBrowser();
+      let processedByWorker = 0;
+
+      try {
+        while (true) {
+          const current = nextIndex++;
+          if (current >= phones.length) break;
+
+          if (processedByWorker > 0 && processedByWorker % 5 === 0) {
+            await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
+            browser = await createBrowser();
+          }
+
+          const result = { index: current + 1, ...(await checkPhone(browser, phones[current])) };
+          results[current] = result;
+          processedByWorker += 1;
+
+          if (onResult) {
+            const readyResults = results.filter(Boolean);
+            await onResult(result, createSummary(readyResults), { current: readyResults.length, total: phones.length });
+          }
+
+          if (delayMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+          }
+        }
+      } finally {
+        if (browser) {
+          await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
+        }
+      }
+    })());
+  }
+
+  await Promise.all(workers);
+  return results.filter(Boolean).sort((a, b) => a.index - b.index);
 }
-
-app.post('/api/check', async (req, res) => {
-  const phones = normalizePhones(req.body?.phones || '');
-  const delayMs = Math.max(500, Math.min(Number(req.body?.delayMs || 2000), 10000));
-
-  if (!phones.length) {
-    return res.status(400).json({ error: 'No phones provided' });
-  }
-
-  let browser = null;
-  const results = [];
-  try {
-    browser = await chromium.launch({ headless: true });
-
-    for (let i = 0; i < phones.length; i++) {
-      if (i > 0 && i % 5 === 0) {
-        await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
-        browser = await chromium.launch({ headless: true });
-      }
-
-      const result = await checkPhone(browser, phones[i]);
-      results.push({ index: i + 1, ...result });
-
-      if (i < phones.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
-    }
-
-    res.json({ summary: createSummary(results), results });
-  } catch (e) {
-    res.status(500).json({ error: String(e && e.stack ? e.stack : e), results });
-  } finally {
-    if (browser) {
-      await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
-    }
-  }
-});
 
 app.get('/api/check-stream', async (req, res) => {
   const phones = normalizePhones(req.query.phones || '');
-  const delayMs = Math.max(500, Math.min(Number(req.query.delayMs || 2000), 10000));
+  const delayMs = Math.max(300, Math.min(Number(req.query.delayMs || 1500), 10000));
+  const concurrency = Math.max(1, Math.min(Number(req.query.concurrency || 1), 4));
 
   if (!phones.length) {
     res.status(400).end('No phones provided');
@@ -161,46 +177,30 @@ app.get('/api/check-stream', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  let browser = null;
   let clientClosed = false;
-  let completed = false;
-  const results = [];
   const send = (event, data) => {
     if (clientClosed) return;
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  req.on('close', async () => {
+  req.on('close', () => {
     clientClosed = true;
-    if (browser) {
-      await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
-    }
   });
 
   try {
-    browser = await chromium.launch({ headless: true });
-    send('start', { total: phones.length });
+    send('start', { total: phones.length, concurrency });
 
-    for (let i = 0; i < phones.length; i++) {
-      if (clientClosed) break;
-
-      if (i > 0 && i % 5 === 0) {
-        await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
-        browser = await chromium.launch({ headless: true });
+    const results = await runChecks({
+      phones,
+      delayMs,
+      concurrency,
+      onResult: async (result, summary, progress) => {
+        send('result', { result, summary, progress });
       }
-
-      const result = { index: i + 1, ...(await checkPhone(browser, phones[i])) };
-      results.push(result);
-      send('result', { result, summary: createSummary(results), progress: { current: i + 1, total: phones.length } });
-
-      if (i < phones.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
-    }
+    });
 
     if (!clientClosed) {
-      completed = true;
       send('done', { summary: createSummary(results), results, progress: { current: results.length, total: phones.length } });
       res.end();
     }
@@ -208,28 +208,54 @@ app.get('/api/check-stream', async (req, res) => {
     if (!clientClosed) {
       send('error', {
         error: String(e && e.stack ? e.stack : e),
-        summary: createSummary(results),
-        results,
-        progress: { current: results.length, total: phones.length }
+        progress: { current: 0, total: phones.length }
       });
       res.end();
     }
-  } finally {
-    if (browser) {
-      await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
-    }
-    if (!completed && !clientClosed) {
-      try {
-        send('error', {
-          error: 'Stream ended unexpectedly without done event',
-          summary: createSummary(results),
-          results,
-          progress: { current: results.length, total: phones.length }
-        });
-        res.end();
-      } catch {}
-    }
   }
+});
+
+app.post('/api/recheck', async (req, res) => {
+  const phones = normalizePhones(req.body?.phones || '');
+  const delayMs = Math.max(300, Math.min(Number(req.body?.delayMs || 1500), 10000));
+  const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), 4));
+
+  if (!phones.length) {
+    return res.status(400).json({ error: 'No phones provided' });
+  }
+
+  try {
+    const results = await runChecks({ phones, delayMs, concurrency });
+    res.json({ summary: createSummary(results), results });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.stack ? e.stack : e) });
+  }
+});
+
+app.post('/api/export.xlsx', async (req, res) => {
+  const results = Array.isArray(req.body?.results) ? req.body.results : [];
+  if (!results.length) {
+    return res.status(400).json({ error: 'No results provided' });
+  }
+
+  const rows = results.map(r => ({
+    Index: r.index,
+    Phone: r.phone,
+    Status: r.status,
+    Reason: r.reason,
+    FinalUrl: r.finalUrl || '',
+    CheckedAt: r.checkedAt || '',
+    Error: r.error || ''
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, 'results');
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="facebook-check-results.xlsx"');
+  res.send(buffer);
 });
 
 app.get('/health', (_req, res) => {

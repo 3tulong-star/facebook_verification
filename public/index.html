@@ -5,44 +5,60 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Facebook Phone Checker</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 16px; }
-    textarea { width: 100%; height: 240px; }
-    input, button { padding: 8px 12px; margin-right: 8px; }
+    body { font-family: Arial, sans-serif; max-width: 1180px; margin: 24px auto; padding: 0 16px; }
+    textarea { width: 100%; height: 220px; }
+    input, button, select { padding: 8px 12px; margin-right: 8px; margin-top: 6px; }
     table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
     th { background: #f5f5f5; }
     .HAS_FB { color: #0a7a2f; font-weight: bold; }
     .NO_FB { color: #b42318; font-weight: bold; }
     .UNKNOWN, .ERROR { color: #9a6700; font-weight: bold; }
     .muted { color: #666; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
+    .small { font-size:12px; color:#666; }
   </style>
 </head>
 <body>
   <h1>Facebook 手机号检测</h1>
-  <p class="muted">一行一个号码。使用 SSE 实时返回结果，边跑边显示。</p>
+  <p class="muted">支持实时流式结果、可控并发、Excel 导出、以及对不确定结果一键复查。</p>
 
   <div>
     <label>号码列表</label>
     <textarea id="phones" placeholder="8613812345678&#10;8615012345678"></textarea>
   </div>
 
-  <div style="margin-top: 12px;">
+  <div class="toolbar">
     <label>间隔(ms)</label>
-    <input id="delayMs" type="number" value="2000" min="500" max="10000" />
+    <input id="delayMs" type="number" value="1500" min="300" max="10000" />
+
+    <label>并发</label>
+    <select id="concurrency">
+      <option value="1">1</option>
+      <option value="2" selected>2</option>
+      <option value="3">3</option>
+      <option value="4">4</option>
+    </select>
+
     <button id="runBtn">开始检测</button>
     <button id="stopBtn" disabled>停止</button>
+    <button id="exportBtn" disabled>导出 Excel</button>
+    <button id="recheckBtn" disabled>复查不确定</button>
   </div>
 
-  <div id="status" style="margin-top: 16px;"></div>
+  <div id="status" style="margin-top:16px;"></div>
   <pre id="errorBox" style="margin-top:12px; white-space:pre-wrap; color:#b42318; background:#fff5f5; padding:12px; border:1px solid #f5c2c7; display:none;"></pre>
-  <div id="summary" style="margin-top: 12px;"></div>
+  <div id="summary" style="margin-top:12px;"></div>
   <div id="results"></div>
 
   <script>
     const runBtn = document.getElementById('runBtn');
     const stopBtn = document.getElementById('stopBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const recheckBtn = document.getElementById('recheckBtn');
     const phonesEl = document.getElementById('phones');
     const delayEl = document.getElementById('delayMs');
+    const concurrencyEl = document.getElementById('concurrency');
     const statusEl = document.getElementById('status');
     const summaryEl = document.getElementById('summary');
     const resultsEl = document.getElementById('results');
@@ -57,6 +73,8 @@
         ${progressText}<br>
         总数: ${summary.total} / 有FB: ${summary.hasFb} / 无FB: ${summary.noFb} / 待复查: ${summary.unknown} / 异常: ${summary.error}
       `;
+      exportBtn.disabled = rows.length === 0;
+      recheckBtn.disabled = !rows.some(r => r.status === 'UNKNOWN' || r.status === 'ERROR');
     }
 
     function renderTable() {
@@ -65,7 +83,7 @@
           <td>${r.index}</td>
           <td>${r.phone}</td>
           <td class="${r.status}">${r.status}</td>
-          <td>${r.reason || ''}</td>
+          <td>${r.reason || ''}${r.error ? `<div class="small">${String(r.error).slice(0, 300)}</div>` : ''}</td>
           <td>${r.finalUrl || ''}</td>
         </tr>
       `).join('');
@@ -95,9 +113,16 @@
       stopBtn.disabled = true;
     }
 
+    function getConfig() {
+      return {
+        phones: phonesEl.value.trim(),
+        delayMs: Number(delayEl.value || 1500),
+        concurrency: Number(concurrencyEl.value || 1)
+      };
+    }
+
     runBtn.addEventListener('click', async () => {
-      const phones = phonesEl.value.trim();
-      const delayMs = Number(delayEl.value || 2000);
+      const { phones, delayMs, concurrency } = getConfig();
       if (!phones) {
         alert('请先输入号码');
         return;
@@ -109,21 +134,25 @@
       errorBox.style.display = 'none';
       errorBox.textContent = '';
       statusEl.textContent = '准备开始...';
+      exportBtn.disabled = true;
+      recheckBtn.disabled = true;
       runBtn.disabled = true;
       stopBtn.disabled = false;
 
-      const params = new URLSearchParams({ phones, delayMs: String(delayMs) });
+      const params = new URLSearchParams({ phones, delayMs: String(delayMs), concurrency: String(concurrency) });
       es = new EventSource(`/api/check-stream?${params.toString()}`);
 
       es.addEventListener('start', (e) => {
         const data = JSON.parse(e.data);
-        statusEl.textContent = `检测中，总数 ${data.total}`;
+        statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}`;
         renderSummary({ total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: 0 / ${data.total}`);
       });
 
       es.addEventListener('result', (e) => {
         const data = JSON.parse(e.data);
-        rows.push(data.result);
+        const idx = rows.findIndex(r => r.index === data.result.index);
+        if (idx >= 0) rows[idx] = data.result; else rows.push(data.result);
+        rows.sort((a, b) => a.index - b.index);
         renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
         renderTable();
         statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
@@ -131,7 +160,9 @@
 
       es.addEventListener('done', (e) => {
         const data = JSON.parse(e.data);
+        rows = data.results || rows;
         renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+        renderTable();
         statusEl.textContent = '检测完成';
         cleanupStream();
       });
@@ -142,8 +173,8 @@
           if (e.data) {
             const data = JSON.parse(e.data);
             message = data.error || message;
-            if (data.summary && data.progress) {
-              renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+            if (data.progress) {
+              renderSummary({ total: rows.length, hasFb: rows.filter(r => r.status === 'HAS_FB').length, noFb: rows.filter(r => r.status === 'NO_FB').length, unknown: rows.filter(r => r.status === 'UNKNOWN').length, error: rows.filter(r => r.status === 'ERROR').length }, `进度: ${data.progress.current} / ${data.progress.total}`);
             }
           }
         } catch {}
@@ -157,6 +188,70 @@
     stopBtn.addEventListener('click', () => {
       statusEl.textContent = '已手动停止';
       cleanupStream();
+    });
+
+    exportBtn.addEventListener('click', async () => {
+      if (!rows.length) return;
+      const resp = await fetch('/api/export.xlsx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ results: rows })
+      });
+      if (!resp.ok) {
+        alert('导出失败');
+        return;
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'facebook-check-results.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    recheckBtn.addEventListener('click', async () => {
+      const targets = rows.filter(r => r.status === 'UNKNOWN' || r.status === 'ERROR').map(r => r.phone);
+      if (!targets.length) {
+        alert('没有待复查号码');
+        return;
+      }
+      statusEl.textContent = `复查中，共 ${targets.length} 个`;
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
+
+      const resp = await fetch('/api/recheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phones: targets.join('\n'),
+          delayMs: Number(delayEl.value || 1500),
+          concurrency: Number(concurrencyEl.value || 1)
+        })
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        errorBox.style.display = 'block';
+        errorBox.textContent = data.error || '复查失败';
+        statusEl.textContent = '复查失败';
+        return;
+      }
+
+      for (const updated of data.results) {
+        const idx = rows.findIndex(r => r.phone === updated.phone);
+        if (idx >= 0) rows[idx] = { ...rows[idx], ...updated };
+      }
+      rows.sort((a, b) => a.index - b.index);
+      renderSummary({
+        total: rows.length,
+        hasFb: rows.filter(r => r.status === 'HAS_FB').length,
+        noFb: rows.filter(r => r.status === 'NO_FB').length,
+        unknown: rows.filter(r => r.status === 'UNKNOWN').length,
+        error: rows.filter(r => r.status === 'ERROR').length,
+      }, '复查完成');
+      renderTable();
+      statusEl.textContent = '复查完成';
     });
   </script>
 </body>
