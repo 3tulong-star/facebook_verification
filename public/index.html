@@ -100,9 +100,10 @@
             ${r.reason || ''}
             <div class="small">rule: ${r.matchedRule || ''}</div>
             <div class="small">title: ${r.title || ''}</div>
+            <div class="small">urlChanged: ${r.urlChanged ? 'true' : 'false'}</div>
             ${r.error ? `<div class="small">error: ${String(r.error).slice(0, 500)}</div>` : ''}
           </td>
-          <td>${r.finalUrl || ''}</td>
+          <td><div class="small">from: ${r.initialUrl || ''}</div><div>${r.finalUrl || ''}</div></td>
           <td>${r.visibleTextSnippet || ''}</td>
         </tr>
       `).join('');

@@ -23,15 +23,24 @@ function normalizePhones(text) {
   )];
 }
 
-function classifyText(text) {
+function classifyResult({ initialUrl, finalUrl, text }) {
   const t = (text || '').replace(/\s+/g, ' ').trim();
-  if (/找不到帐户|找不到账户|No search results|No account found|check your email or mobile number and try again/i.test(t)) {
-    return { status: 'NO_FB', reason: 'facebook returned no account found', matchedRule: 'no_account_found_text' };
+  const urlChanged = !!finalUrl && !!initialUrl && finalUrl !== initialUrl;
+  const inRecoverFlow = /\/recover\//i.test(finalUrl || '');
+  const hasNoAccountText = /找不到帐户|找不到账户|No search results|No account found|check your email or mobile number and try again/i.test(t);
+  const hasRecoveryText = /选择登录方式|获取短信验证码|使用密码|无法再访问这些\?|Choose how to log in|Send code via SMS|Use password|No longer have access to these\?/i.test(t);
+  const hasIdentifyText = /查找你的账户|请输入你的手机号或邮箱|Find your account|Please enter your mobile number or email/i.test(t);
+
+  if (inRecoverFlow || urlChanged) {
+    return { status: 'HAS_FB', reason: 'url changed into recovery flow', matchedRule: inRecoverFlow ? 'recover_url' : 'url_changed' };
   }
-  if (/选择登录方式|获取短信验证码|使用密码|无法再访问这些\?|Choose how to log in|Send code via SMS|Use password|No longer have access to these\?/i.test(t)) {
+  if (!urlChanged && /\/login\/identify/i.test(finalUrl || '') && hasNoAccountText) {
+    return { status: 'NO_FB', reason: 'stayed on identify page with no-account text', matchedRule: 'identify_url_plus_no_account_text' };
+  }
+  if (hasRecoveryText) {
     return { status: 'HAS_FB', reason: 'facebook returned recovery options', matchedRule: 'recovery_options_text' };
   }
-  if (/查找你的账户|请输入你的手机号或邮箱|Find your account|Please enter your mobile number or email/i.test(t)) {
+  if (hasIdentifyText) {
     return { status: 'UNKNOWN', reason: 'stayed on identify page without conclusive result', matchedRule: 'identify_page_text' };
   }
   return { status: 'UNKNOWN', reason: 'unrecognized response page', matchedRule: 'fallback_unrecognized' };
@@ -77,6 +86,7 @@ async function checkPhone(browser, phone) {
   let context = null;
   let page = null;
   let text = '';
+  let initialUrl = 'https://www.facebook.com/login/identify';
   let finalUrl = '';
   let title = '';
 
@@ -104,14 +114,16 @@ async function checkPhone(browser, phone) {
     })(), 45000, `phone ${phone}`);
 
     const visibleTextSnippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500);
-    const classified = classifyText(text);
+    const classified = classifyResult({ initialUrl, finalUrl, text });
     return {
       phone,
       status: classified.status,
       reason: classified.reason,
       matchedRule: classified.matchedRule,
       title,
+      initialUrl,
       finalUrl,
+      urlChanged: initialUrl !== finalUrl,
       visibleTextSnippet,
       error: null,
       checkedAt: new Date().toISOString(),
@@ -123,7 +135,9 @@ async function checkPhone(browser, phone) {
       reason: 'runtime error',
       matchedRule: 'runtime_error',
       title,
+      initialUrl,
       finalUrl,
+      urlChanged: initialUrl !== finalUrl,
       visibleTextSnippet: String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500),
       error: String(e && e.stack ? e.stack : e),
       checkedAt: new Date().toISOString(),
@@ -331,7 +345,9 @@ app.post('/api/export.xlsx', async (req, res) => {
     Reason: r.reason,
     MatchedRule: r.matchedRule || '',
     Title: r.title || '',
+    InitialUrl: r.initialUrl || '',
     FinalUrl: r.finalUrl || '',
+    UrlChanged: r.urlChanged ? 'true' : 'false',
     VisibleTextSnippet: r.visibleTextSnippet || '',
     CheckedAt: r.checkedAt || '',
     Error: r.error || ''
