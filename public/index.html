@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Facebook Phone Checker</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    textarea { width: 100%; height: 240px; }
+    input, button { padding: 8px 12px; margin-right: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #f5f5f5; }
+    .HAS_FB { color: #0a7a2f; font-weight: bold; }
+    .NO_FB { color: #b42318; font-weight: bold; }
+    .UNKNOWN, .ERROR { color: #9a6700; font-weight: bold; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Facebook 手机号检测</h1>
+  <p class="muted">一行一个号码。提交后后端会用浏览器访问 Facebook 找回页判断是否命中恢复流程。</p>
+
+  <div>
+    <label>号码列表</label>
+    <textarea id="phones" placeholder="8613812345678&#10;8615012345678"></textarea>
+  </div>
+
+  <div style="margin-top: 12px;">
+    <label>间隔(ms)</label>
+    <input id="delayMs" type="number" value="2000" min="500" max="10000" />
+    <button id="runBtn">开始检测</button>
+  </div>
+
+  <div id="status" style="margin-top: 16px;"></div>
+  <div id="summary" style="margin-top: 12px;"></div>
+  <div id="results"></div>
+
+  <script>
+    const runBtn = document.getElementById('runBtn');
+    const phonesEl = document.getElementById('phones');
+    const delayEl = document.getElementById('delayMs');
+    const statusEl = document.getElementById('status');
+    const summaryEl = document.getElementById('summary');
+    const resultsEl = document.getElementById('results');
+
+    function renderResults(data) {
+      const { summary, results } = data;
+      summaryEl.innerHTML = `
+        <strong>汇总</strong><br>
+        总数: ${summary.total} / 有FB: ${summary.hasFb} / 无FB: ${summary.noFb} / 待复查: ${summary.unknown} / 异常: ${summary.error}
+      `;
+
+      const rows = results.map(r => `
+        <tr>
+          <td>${r.index}</td>
+          <td>${r.phone}</td>
+          <td class="${r.status}">${r.status}</td>
+          <td>${r.reason || ''}</td>
+          <td>${r.finalUrl || ''}</td>
+        </tr>
+      `).join('');
+
+      resultsEl.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Phone</th>
+              <th>Status</th>
+              <th>Reason</th>
+              <th>Final URL</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    runBtn.addEventListener('click', async () => {
+      const phones = phonesEl.value.trim();
+      const delayMs = Number(delayEl.value || 2000);
+      if (!phones) {
+        alert('请先输入号码');
+        return;
+      }
+
+      runBtn.disabled = true;
+      statusEl.textContent = '检测中，请稍等...';
+      summaryEl.innerHTML = '';
+      resultsEl.innerHTML = '';
+
+      try {
+        const resp = await fetch('/api/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phones, delayMs })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'request failed');
+        statusEl.textContent = '检测完成';
+        renderResults(data);
+      } catch (e) {
+        statusEl.textContent = '检测失败: ' + e.message;
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

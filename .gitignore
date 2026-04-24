@@ -1,0 +1,4 @@
+node_modules/
+playwright-report/
+package-lock.json
+.env
