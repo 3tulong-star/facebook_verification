@@ -3,11 +3,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
 import XLSX from 'xlsx';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
+const jobs = new Map();
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -27,15 +29,12 @@ function classifyText(text) {
   if (/找不到帐户|找不到账户|No search results|No account found|check your email or mobile number and try again/i.test(t)) {
     return { status: 'NO_FB', reason: 'facebook returned no account found' };
   }
-
   if (/选择登录方式|获取短信验证码|使用密码|无法再访问这些\?|Choose how to log in|Send code via SMS|Use password|No longer have access to these\?/i.test(t)) {
     return { status: 'HAS_FB', reason: 'facebook returned recovery options' };
   }
-
   if (/查找你的账户|请输入你的手机号或邮箱|Find your account|Please enter your mobile number or email/i.test(t)) {
     return { status: 'UNKNOWN', reason: 'stayed on identify page without conclusive result' };
   }
-
   return { status: 'UNKNOWN', reason: 'unrecognized response page' };
 }
 
@@ -126,7 +125,6 @@ async function runChecks({ phones, delayMs = 2000, concurrency = 1, onResult }) 
     workers.push((async () => {
       let browser = await createBrowser();
       let processedByWorker = 0;
-
       try {
         while (true) {
           const current = nextIndex++;
@@ -162,14 +160,84 @@ async function runChecks({ phones, delayMs = 2000, concurrency = 1, onResult }) 
   return results.filter(Boolean).sort((a, b) => a.index - b.index);
 }
 
-app.get('/api/check-stream', async (req, res) => {
-  const phones = normalizePhones(req.query.phones || '');
-  const delayMs = Math.max(300, Math.min(Number(req.query.delayMs || 1500), 10000));
-  const concurrency = Math.max(1, Math.min(Number(req.query.concurrency || 1), 4));
+function createJob({ phones, delayMs, concurrency }) {
+  const id = crypto.randomUUID();
+  const job = {
+    id,
+    phones,
+    delayMs,
+    concurrency,
+    results: [],
+    total: phones.length,
+    status: 'pending',
+    error: null,
+    listeners: new Set(),
+    createdAt: Date.now(),
+  };
+  jobs.set(id, job);
+  return job;
+}
+
+function emitJob(job, event, data) {
+  for (const res of job.listeners) {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }
+}
+
+async function startJob(job) {
+  if (job.status !== 'pending') return;
+  job.status = 'running';
+  emitJob(job, 'start', { total: job.total, concurrency: job.concurrency, jobId: job.id });
+
+  try {
+    const results = await runChecks({
+      phones: job.phones,
+      delayMs: job.delayMs,
+      concurrency: job.concurrency,
+      onResult: async (result, summary, progress) => {
+        job.results = job.results.filter(r => r.index !== result.index).concat(result).sort((a, b) => a.index - b.index);
+        emitJob(job, 'result', { result, summary, progress, jobId: job.id });
+      }
+    });
+
+    job.results = results;
+    job.status = 'done';
+    emitJob(job, 'done', {
+      summary: createSummary(results),
+      results,
+      progress: { current: results.length, total: job.total },
+      jobId: job.id
+    });
+  } catch (e) {
+    job.status = 'error';
+    job.error = String(e && e.stack ? e.stack : e);
+    emitJob(job, 'error', {
+      error: job.error,
+      progress: { current: job.results.length, total: job.total },
+      jobId: job.id
+    });
+  }
+}
+
+app.post('/api/jobs', async (req, res) => {
+  const phones = normalizePhones(req.body?.phones || '');
+  const delayMs = Math.max(300, Math.min(Number(req.body?.delayMs || 1500), 10000));
+  const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), 4));
 
   if (!phones.length) {
-    res.status(400).end('No phones provided');
-    return;
+    return res.status(400).json({ error: 'No phones provided' });
+  }
+
+  const job = createJob({ phones, delayMs, concurrency });
+  startJob(job);
+  res.json({ jobId: job.id, total: job.total, concurrency: job.concurrency });
+});
+
+app.get('/api/jobs/:jobId/stream', async (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) {
+    return res.status(404).end('Job not found');
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -177,42 +245,36 @@ app.get('/api/check-stream', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  let clientClosed = false;
-  const send = (event, data) => {
-    if (clientClosed) return;
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
+  job.listeners.add(res);
+
+  res.write(`event: start\n`);
+  res.write(`data: ${JSON.stringify({ total: job.total, concurrency: job.concurrency, jobId: job.id })}\n\n`);
+
+  for (const result of job.results) {
+    const summary = createSummary(job.results);
+    res.write(`event: result\n`);
+    res.write(`data: ${JSON.stringify({ result, summary, progress: { current: job.results.length, total: job.total }, jobId: job.id })}\n\n`);
+  }
+
+  if (job.status === 'done') {
+    res.write(`event: done\n`);
+    res.write(`data: ${JSON.stringify({ summary: createSummary(job.results), results: job.results, progress: { current: job.results.length, total: job.total }, jobId: job.id })}\n\n`);
+    res.end();
+    job.listeners.delete(res);
+    return;
+  }
+
+  if (job.status === 'error') {
+    res.write(`event: error\n`);
+    res.write(`data: ${JSON.stringify({ error: job.error, progress: { current: job.results.length, total: job.total }, jobId: job.id })}\n\n`);
+    res.end();
+    job.listeners.delete(res);
+    return;
+  }
 
   req.on('close', () => {
-    clientClosed = true;
+    job.listeners.delete(res);
   });
-
-  try {
-    send('start', { total: phones.length, concurrency });
-
-    const results = await runChecks({
-      phones,
-      delayMs,
-      concurrency,
-      onResult: async (result, summary, progress) => {
-        send('result', { result, summary, progress });
-      }
-    });
-
-    if (!clientClosed) {
-      send('done', { summary: createSummary(results), results, progress: { current: results.length, total: phones.length } });
-      res.end();
-    }
-  } catch (e) {
-    if (!clientClosed) {
-      send('error', {
-        error: String(e && e.stack ? e.stack : e),
-        progress: { current: 0, total: phones.length }
-      });
-      res.end();
-    }
-  }
 });
 
 app.post('/api/recheck', async (req, res) => {

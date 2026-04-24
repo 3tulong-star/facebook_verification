@@ -21,7 +21,7 @@
 </head>
 <body>
   <h1>Facebook 手机号检测</h1>
-  <p class="muted">支持实时流式结果、可控并发、Excel 导出、以及对不确定结果一键复查。</p>
+  <p class="muted">已修复长号码列表触发 431 的问题：现在先创建任务，再用短 jobId 建立 SSE 流。</p>
 
   <div>
     <label>号码列表</label>
@@ -66,6 +66,7 @@
 
     let es = null;
     let rows = [];
+    let currentJobId = null;
 
     function renderSummary(summary, progressText = '') {
       summaryEl.innerHTML = `
@@ -113,80 +114,88 @@
       stopBtn.disabled = true;
     }
 
-    function getConfig() {
-      return {
-        phones: phonesEl.value.trim(),
-        delayMs: Number(delayEl.value || 1500),
-        concurrency: Number(concurrencyEl.value || 1)
-      };
-    }
-
     runBtn.addEventListener('click', async () => {
-      const { phones, delayMs, concurrency } = getConfig();
+      const phones = phonesEl.value.trim();
+      const delayMs = Number(delayEl.value || 1500);
+      const concurrency = Number(concurrencyEl.value || 1);
       if (!phones) {
         alert('请先输入号码');
         return;
       }
 
       rows = [];
+      currentJobId = null;
       resultsEl.innerHTML = '';
       summaryEl.innerHTML = '';
       errorBox.style.display = 'none';
       errorBox.textContent = '';
-      statusEl.textContent = '准备开始...';
+      statusEl.textContent = '创建任务中...';
       exportBtn.disabled = true;
       recheckBtn.disabled = true;
       runBtn.disabled = true;
       stopBtn.disabled = false;
 
-      const params = new URLSearchParams({ phones, delayMs: String(delayMs), concurrency: String(concurrency) });
-      es = new EventSource(`/api/check-stream?${params.toString()}`);
+      try {
+        const createResp = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phones, delayMs, concurrency })
+        });
+        const createData = await createResp.json();
+        if (!createResp.ok) throw new Error(createData.error || '创建任务失败');
 
-      es.addEventListener('start', (e) => {
-        const data = JSON.parse(e.data);
-        statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}`;
-        renderSummary({ total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: 0 / ${data.total}`);
-      });
+        currentJobId = createData.jobId;
+        statusEl.textContent = `任务已创建，连接流中... jobId=${currentJobId}`;
+        es = new EventSource(`/api/jobs/${currentJobId}/stream`);
 
-      es.addEventListener('result', (e) => {
-        const data = JSON.parse(e.data);
-        const idx = rows.findIndex(r => r.index === data.result.index);
-        if (idx >= 0) rows[idx] = data.result; else rows.push(data.result);
-        rows.sort((a, b) => a.index - b.index);
-        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
-        renderTable();
-        statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
-      });
+        es.addEventListener('start', (e) => {
+          const data = JSON.parse(e.data);
+          statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}`;
+          renderSummary({ total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: 0 / ${data.total}`);
+        });
 
-      es.addEventListener('done', (e) => {
-        const data = JSON.parse(e.data);
-        rows = data.results || rows;
-        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
-        renderTable();
-        statusEl.textContent = '检测完成';
-        cleanupStream();
-      });
+        es.addEventListener('result', (e) => {
+          const data = JSON.parse(e.data);
+          const idx = rows.findIndex(r => r.index === data.result.index);
+          if (idx >= 0) rows[idx] = data.result; else rows.push(data.result);
+          rows.sort((a, b) => a.index - b.index);
+          renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+          renderTable();
+          statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
+        });
 
-      es.addEventListener('error', (e) => {
-        let message = '流式连接异常';
-        try {
-          if (e.data) {
-            const data = JSON.parse(e.data);
-            message = data.error || message;
-            if (data.progress) {
-              renderSummary({ total: rows.length, hasFb: rows.filter(r => r.status === 'HAS_FB').length, noFb: rows.filter(r => r.status === 'NO_FB').length, unknown: rows.filter(r => r.status === 'UNKNOWN').length, error: rows.filter(r => r.status === 'ERROR').length }, `进度: ${data.progress.current} / ${data.progress.total}`);
+        es.addEventListener('done', (e) => {
+          const data = JSON.parse(e.data);
+          rows = data.results || rows;
+          renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+          renderTable();
+          statusEl.textContent = '检测完成';
+          cleanupStream();
+        });
+
+        es.addEventListener('error', (e) => {
+          let message = '流式连接异常';
+          try {
+            if (e.data) {
+              const data = JSON.parse(e.data);
+              message = data.error || message;
             }
-          }
-        } catch {}
+          } catch {}
+          errorBox.style.display = 'block';
+          errorBox.textContent = message;
+          statusEl.textContent = '流式检测异常';
+          cleanupStream();
+        });
+      } catch (e) {
         errorBox.style.display = 'block';
-        errorBox.textContent = message;
-        statusEl.textContent = '流式检测异常';
+        errorBox.textContent = e.message;
+        statusEl.textContent = '创建任务失败';
         cleanupStream();
-      });
+      }
     });
 
     stopBtn.addEventListener('click', () => {
-      statusEl.textContent = '已手动停止';
+      statusEl.textContent = '已手动停止本地监听';
       cleanupStream();
     });
 
