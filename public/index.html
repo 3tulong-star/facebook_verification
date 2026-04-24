@@ -21,7 +21,7 @@
 </head>
 <body>
   <h1>Facebook 手机号检测</h1>
-  <p class="muted">已修复长号码列表触发 431 的问题：现在先创建任务，再用短 jobId 建立 SSE 流。</p>
+  <p class="muted">支持任务化流式检测、自动重连、Excel 导出、复查不确定结果。</p>
 
   <div>
     <label>号码列表</label>
@@ -41,7 +41,7 @@
     </select>
 
     <button id="runBtn">开始检测</button>
-    <button id="stopBtn" disabled>停止</button>
+    <button id="stopBtn" disabled>停止监听</button>
     <button id="exportBtn" disabled>导出 Excel</button>
     <button id="recheckBtn" disabled>复查不确定</button>
   </div>
@@ -67,6 +67,18 @@
     let es = null;
     let rows = [];
     let currentJobId = null;
+    let reconnectTimer = null;
+    let userStopped = false;
+
+    function computeSummary() {
+      return {
+        total: rows.length,
+        hasFb: rows.filter(r => r.status === 'HAS_FB').length,
+        noFb: rows.filter(r => r.status === 'NO_FB').length,
+        unknown: rows.filter(r => r.status === 'UNKNOWN').length,
+        error: rows.filter(r => r.status === 'ERROR').length,
+      };
+    }
 
     function renderSummary(summary, progressText = '') {
       summaryEl.innerHTML = `
@@ -84,7 +96,7 @@
           <td>${r.index}</td>
           <td>${r.phone}</td>
           <td class="${r.status}">${r.status}</td>
-          <td>${r.reason || ''}${r.error ? `<div class="small">${String(r.error).slice(0, 300)}</div>` : ''}</td>
+          <td>${r.reason || ''}${r.error ? `<div class="small">${String(r.error).slice(0, 500)}</div>` : ''}</td>
           <td>${r.finalUrl || ''}</td>
         </tr>
       `).join('');
@@ -110,8 +122,111 @@
         es.close();
         es = null;
       }
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       runBtn.disabled = false;
       stopBtn.disabled = true;
+    }
+
+    async function fetchJobStatus() {
+      if (!currentJobId) return null;
+      const resp = await fetch(`/api/jobs/${currentJobId}`);
+      if (!resp.ok) throw new Error('获取任务状态失败');
+      return resp.json();
+    }
+
+    function upsertRow(result) {
+      const idx = rows.findIndex(r => r.index === result.index);
+      if (idx >= 0) rows[idx] = result; else rows.push(result);
+      rows.sort((a, b) => a.index - b.index);
+    }
+
+    function scheduleReconnect() {
+      if (userStopped || !currentJobId) return;
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(async () => {
+        reconnectTimer = null;
+        try {
+          const status = await fetchJobStatus();
+          if (!status) return;
+          renderSummary(status.summary, `进度: ${status.progress.current} / ${status.progress.total}`);
+          if (status.status === 'done') {
+            statusEl.textContent = '任务已完成，自动恢复状态成功';
+            cleanupStream();
+            return;
+          }
+          if (status.status === 'error') {
+            errorBox.style.display = 'block';
+            errorBox.textContent = status.error || '任务失败，但未返回详细错误';
+            statusEl.textContent = '任务失败';
+            cleanupStream();
+            return;
+          }
+          statusEl.textContent = '流断开，任务仍在运行，正在自动重连...';
+          connectStream(currentJobId);
+        } catch (e) {
+          errorBox.style.display = 'block';
+          errorBox.textContent = `自动重连失败: ${e.message}`;
+          statusEl.textContent = '自动重连失败';
+          cleanupStream();
+        }
+      }, 3000);
+    }
+
+    function connectStream(jobId) {
+      if (es) es.close();
+      es = new EventSource(`/api/jobs/${jobId}/stream`);
+
+      es.addEventListener('start', (e) => {
+        const data = JSON.parse(e.data);
+        statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}，jobId=${data.jobId}`;
+        renderSummary(data.summary || { total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: ${data.progress?.current || 0} / ${data.progress?.total || data.total}`);
+      });
+
+      es.addEventListener('result', (e) => {
+        const data = JSON.parse(e.data);
+        upsertRow(data.result);
+        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+        renderTable();
+        statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
+      });
+
+      es.addEventListener('ping', async () => {
+        statusEl.textContent = '检测中（连接保活中）';
+      });
+
+      es.addEventListener('done', (e) => {
+        const data = JSON.parse(e.data);
+        rows = data.results || rows;
+        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
+        renderTable();
+        statusEl.textContent = '检测完成';
+        cleanupStream();
+      });
+
+      es.addEventListener('error', async (e) => {
+        let explicitError = null;
+        try {
+          if (e.data) {
+            const data = JSON.parse(e.data);
+            explicitError = data.error || null;
+          }
+        } catch {}
+
+        if (explicitError) {
+          errorBox.style.display = 'block';
+          errorBox.textContent = explicitError;
+          statusEl.textContent = '任务失败';
+          cleanupStream();
+          return;
+        }
+
+        errorBox.style.display = 'block';
+        errorBox.textContent = 'SSE 连接断开。正在查询任务状态并尝试自动重连；如果任务仍在跑，会继续接上。';
+        scheduleReconnect();
+      });
     }
 
     runBtn.addEventListener('click', async () => {
@@ -125,6 +240,7 @@
 
       rows = [];
       currentJobId = null;
+      userStopped = false;
       resultsEl.innerHTML = '';
       summaryEl.innerHTML = '';
       errorBox.style.display = 'none';
@@ -145,47 +261,8 @@
         if (!createResp.ok) throw new Error(createData.error || '创建任务失败');
 
         currentJobId = createData.jobId;
-        statusEl.textContent = `任务已创建，连接流中... jobId=${currentJobId}`;
-        es = new EventSource(`/api/jobs/${currentJobId}/stream`);
-
-        es.addEventListener('start', (e) => {
-          const data = JSON.parse(e.data);
-          statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}`;
-          renderSummary({ total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: 0 / ${data.total}`);
-        });
-
-        es.addEventListener('result', (e) => {
-          const data = JSON.parse(e.data);
-          const idx = rows.findIndex(r => r.index === data.result.index);
-          if (idx >= 0) rows[idx] = data.result; else rows.push(data.result);
-          rows.sort((a, b) => a.index - b.index);
-          renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
-          renderTable();
-          statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
-        });
-
-        es.addEventListener('done', (e) => {
-          const data = JSON.parse(e.data);
-          rows = data.results || rows;
-          renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total}`);
-          renderTable();
-          statusEl.textContent = '检测完成';
-          cleanupStream();
-        });
-
-        es.addEventListener('error', (e) => {
-          let message = '流式连接异常';
-          try {
-            if (e.data) {
-              const data = JSON.parse(e.data);
-              message = data.error || message;
-            }
-          } catch {}
-          errorBox.style.display = 'block';
-          errorBox.textContent = message;
-          statusEl.textContent = '流式检测异常';
-          cleanupStream();
-        });
+        statusEl.textContent = `任务已创建，jobId=${currentJobId}`;
+        connectStream(currentJobId);
       } catch (e) {
         errorBox.style.display = 'block';
         errorBox.textContent = e.message;
@@ -195,7 +272,8 @@
     });
 
     stopBtn.addEventListener('click', () => {
-      statusEl.textContent = '已手动停止本地监听';
+      userStopped = true;
+      statusEl.textContent = '已手动停止监听';
       cleanupStream();
     });
 
@@ -252,13 +330,7 @@
         if (idx >= 0) rows[idx] = { ...rows[idx], ...updated };
       }
       rows.sort((a, b) => a.index - b.index);
-      renderSummary({
-        total: rows.length,
-        hasFb: rows.filter(r => r.status === 'HAS_FB').length,
-        noFb: rows.filter(r => r.status === 'NO_FB').length,
-        unknown: rows.filter(r => r.status === 'UNKNOWN').length,
-        error: rows.filter(r => r.status === 'ERROR').length,
-      }, '复查完成');
+      renderSummary(computeSummary(), '复查完成');
       renderTable();
       statusEl.textContent = '复查完成';
     });

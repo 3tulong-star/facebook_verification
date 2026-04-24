@@ -25,7 +25,6 @@ function normalizePhones(text) {
 
 function classifyText(text) {
   const t = (text || '').replace(/\s+/g, ' ').trim();
-
   if (/找不到帐户|找不到账户|No search results|No account found|check your email or mobile number and try again/i.test(t)) {
     return { status: 'NO_FB', reason: 'facebook returned no account found' };
   }
@@ -52,6 +51,21 @@ function createSummary(results) {
     noFb: results.filter(r => r.status === 'NO_FB').length,
     unknown: results.filter(r => r.status === 'UNKNOWN').length,
     error: results.filter(r => r.status === 'ERROR').length,
+  };
+}
+
+function jobSnapshot(job) {
+  return {
+    jobId: job.id,
+    status: job.status,
+    total: job.total,
+    processed: job.results.length,
+    progress: { current: job.results.length, total: job.total },
+    summary: createSummary(job.results),
+    error: job.error,
+    lastEventAt: job.lastEventAt,
+    concurrency: job.concurrency,
+    delayMs: job.delayMs,
   };
 }
 
@@ -173,12 +187,14 @@ function createJob({ phones, delayMs, concurrency }) {
     error: null,
     listeners: new Set(),
     createdAt: Date.now(),
+    lastEventAt: Date.now(),
   };
   jobs.set(id, job);
   return job;
 }
 
 function emitJob(job, event, data) {
+  job.lastEventAt = Date.now();
   for (const res of job.listeners) {
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -188,7 +204,7 @@ function emitJob(job, event, data) {
 async function startJob(job) {
   if (job.status !== 'pending') return;
   job.status = 'running';
-  emitJob(job, 'start', { total: job.total, concurrency: job.concurrency, jobId: job.id });
+  emitJob(job, 'start', { ...jobSnapshot(job) });
 
   try {
     const results = await runChecks({
@@ -197,26 +213,17 @@ async function startJob(job) {
       concurrency: job.concurrency,
       onResult: async (result, summary, progress) => {
         job.results = job.results.filter(r => r.index !== result.index).concat(result).sort((a, b) => a.index - b.index);
-        emitJob(job, 'result', { result, summary, progress, jobId: job.id });
+        emitJob(job, 'result', { result, summary, progress, ...jobSnapshot(job) });
       }
     });
 
     job.results = results;
     job.status = 'done';
-    emitJob(job, 'done', {
-      summary: createSummary(results),
-      results,
-      progress: { current: results.length, total: job.total },
-      jobId: job.id
-    });
+    emitJob(job, 'done', { ...jobSnapshot(job), results, progress: { current: results.length, total: job.total } });
   } catch (e) {
     job.status = 'error';
     job.error = String(e && e.stack ? e.stack : e);
-    emitJob(job, 'error', {
-      error: job.error,
-      progress: { current: job.results.length, total: job.total },
-      jobId: job.id
-    });
+    emitJob(job, 'error', { ...jobSnapshot(job), error: job.error });
   }
 }
 
@@ -231,7 +238,13 @@ app.post('/api/jobs', async (req, res) => {
 
   const job = createJob({ phones, delayMs, concurrency });
   startJob(job);
-  res.json({ jobId: job.id, total: job.total, concurrency: job.concurrency });
+  res.json({ ...jobSnapshot(job) });
+});
+
+app.get('/api/jobs/:jobId', async (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json({ ...jobSnapshot(job), recentResults: job.results.slice(-20) });
 });
 
 app.get('/api/jobs/:jobId/stream', async (req, res) => {
@@ -246,19 +259,18 @@ app.get('/api/jobs/:jobId/stream', async (req, res) => {
   res.flushHeaders();
 
   job.listeners.add(res);
-
   res.write(`event: start\n`);
-  res.write(`data: ${JSON.stringify({ total: job.total, concurrency: job.concurrency, jobId: job.id })}\n\n`);
+  res.write(`data: ${JSON.stringify({ ...jobSnapshot(job) })}\n\n`);
 
   for (const result of job.results) {
     const summary = createSummary(job.results);
     res.write(`event: result\n`);
-    res.write(`data: ${JSON.stringify({ result, summary, progress: { current: job.results.length, total: job.total }, jobId: job.id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ result, summary, progress: { current: job.results.length, total: job.total }, ...jobSnapshot(job) })}\n\n`);
   }
 
   if (job.status === 'done') {
     res.write(`event: done\n`);
-    res.write(`data: ${JSON.stringify({ summary: createSummary(job.results), results: job.results, progress: { current: job.results.length, total: job.total }, jobId: job.id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ ...jobSnapshot(job), results: job.results })}\n\n`);
     res.end();
     job.listeners.delete(res);
     return;
@@ -266,13 +278,20 @@ app.get('/api/jobs/:jobId/stream', async (req, res) => {
 
   if (job.status === 'error') {
     res.write(`event: error\n`);
-    res.write(`data: ${JSON.stringify({ error: job.error, progress: { current: job.results.length, total: job.total }, jobId: job.id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ ...jobSnapshot(job) })}\n\n`);
     res.end();
     job.listeners.delete(res);
     return;
   }
 
+  const heartbeat = setInterval(() => {
+    if (!job.listeners.has(res)) return;
+    res.write(`event: ping\n`);
+    res.write(`data: ${JSON.stringify({ ...jobSnapshot(job) })}\n\n`);
+  }, 15000);
+
   req.on('close', () => {
+    clearInterval(heartbeat);
     job.listeners.delete(res);
   });
 });
@@ -321,7 +340,7 @@ app.post('/api/export.xlsx', async (req, res) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, jobs: jobs.size });
 });
 
 app.listen(PORT, () => {
