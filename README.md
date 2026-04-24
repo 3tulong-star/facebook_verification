@@ -23,13 +23,14 @@ http://localhost:3000
 - Start Command: `npm start`
 - Node version: 20+
 
-首次构建需要安装 Playwright Chromium。可在 Railway 的构建阶段使用：
+本项目优先使用 Docker 部署，并要求 Docker 镜像里的 Playwright 版本与 `package.json` 保持一致。
 
-```bash
-npx playwright install chromium
-```
+当前固定版本：
 
-如果需要，也可以改成 Docker 部署以获得更稳定的浏览器环境。
+- Playwright npm: `1.59.1`
+- Docker image: `mcr.microsoft.com/playwright:v1.59.1-noble`
+
+如果后续升级 Playwright，必须同时升级这两个版本，避免浏览器可执行文件路径不匹配。
 
 ## 接口
 
