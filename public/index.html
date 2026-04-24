@@ -96,8 +96,14 @@
           <td>${r.index}</td>
           <td>${r.phone}</td>
           <td class="${r.status}">${r.status}</td>
-          <td>${r.reason || ''}${r.error ? `<div class="small">${String(r.error).slice(0, 500)}</div>` : ''}</td>
+          <td>
+            ${r.reason || ''}
+            <div class="small">rule: ${r.matchedRule || ''}</div>
+            <div class="small">title: ${r.title || ''}</div>
+            ${r.error ? `<div class="small">error: ${String(r.error).slice(0, 500)}</div>` : ''}
+          </td>
           <td>${r.finalUrl || ''}</td>
+          <td>${r.visibleTextSnippet || ''}</td>
         </tr>
       `).join('');
 
@@ -108,8 +114,9 @@
               <th>#</th>
               <th>Phone</th>
               <th>Status</th>
-              <th>Reason</th>
+              <th>Diagnosis</th>
               <th>Final URL</th>
+              <th>Visible Text Snippet</th>
             </tr>
           </thead>
           <tbody>${tableRows}</tbody>
