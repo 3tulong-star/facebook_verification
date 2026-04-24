@@ -100,6 +100,16 @@ async function checkPhone(browser, phone) {
   }
 }
 
+function createSummary(results) {
+  return {
+    total: results.length,
+    hasFb: results.filter(r => r.status === 'HAS_FB').length,
+    noFb: results.filter(r => r.status === 'NO_FB').length,
+    unknown: results.filter(r => r.status === 'UNKNOWN').length,
+    error: results.filter(r => r.status === 'ERROR').length,
+  };
+}
+
 app.post('/api/check', async (req, res) => {
   const phones = normalizePhones(req.body?.phones || '');
   const delayMs = Math.max(500, Math.min(Number(req.body?.delayMs || 2000), 10000));
@@ -127,17 +137,67 @@ app.post('/api/check', async (req, res) => {
       }
     }
 
-    const summary = {
-      total: results.length,
-      hasFb: results.filter(r => r.status === 'HAS_FB').length,
-      noFb: results.filter(r => r.status === 'NO_FB').length,
-      unknown: results.filter(r => r.status === 'UNKNOWN').length,
-      error: results.filter(r => r.status === 'ERROR').length,
-    };
-
-    res.json({ summary, results });
+    res.json({ summary: createSummary(results), results });
   } catch (e) {
     res.status(500).json({ error: String(e && e.stack ? e.stack : e), results });
+  } finally {
+    if (browser) {
+      await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
+    }
+  }
+});
+
+app.get('/api/check-stream', async (req, res) => {
+  const phones = normalizePhones(req.query.phones || '');
+  const delayMs = Math.max(500, Math.min(Number(req.query.delayMs || 2000), 10000));
+
+  if (!phones.length) {
+    res.status(400).end('No phones provided');
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  let browser = null;
+  const results = [];
+  const send = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  req.on('close', async () => {
+    if (browser) {
+      await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
+    }
+  });
+
+  try {
+    browser = await chromium.launch({ headless: true });
+    send('start', { total: phones.length });
+
+    for (let i = 0; i < phones.length; i++) {
+      if (i > 0 && i % 5 === 0) {
+        await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});
+        browser = await chromium.launch({ headless: true });
+      }
+
+      const result = { index: i + 1, ...(await checkPhone(browser, phones[i])) };
+      results.push(result);
+      send('result', { result, summary: createSummary(results) });
+
+      if (i < phones.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+
+    send('done', { summary: createSummary(results), results });
+    res.end();
+  } catch (e) {
+    send('error', { error: String(e && e.stack ? e.stack : e), summary: createSummary(results), results });
+    res.end();
   } finally {
     if (browser) {
       await withTimeout(browser.close().catch(() => {}), 10000, 'browser close').catch(() => {});

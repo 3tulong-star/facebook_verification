@@ -19,7 +19,7 @@
 </head>
 <body>
   <h1>Facebook 手机号检测</h1>
-  <p class="muted">一行一个号码。提交后后端会用浏览器访问 Facebook 找回页判断是否命中恢复流程。</p>
+  <p class="muted">一行一个号码。使用 SSE 实时返回结果，边跑边显示。</p>
 
   <div>
     <label>号码列表</label>
@@ -30,6 +30,7 @@
     <label>间隔(ms)</label>
     <input id="delayMs" type="number" value="2000" min="500" max="10000" />
     <button id="runBtn">开始检测</button>
+    <button id="stopBtn" disabled>停止</button>
   </div>
 
   <div id="status" style="margin-top: 16px;"></div>
@@ -38,20 +39,26 @@
 
   <script>
     const runBtn = document.getElementById('runBtn');
+    const stopBtn = document.getElementById('stopBtn');
     const phonesEl = document.getElementById('phones');
     const delayEl = document.getElementById('delayMs');
     const statusEl = document.getElementById('status');
     const summaryEl = document.getElementById('summary');
     const resultsEl = document.getElementById('results');
 
-    function renderResults(data) {
-      const { summary, results } = data;
+    let es = null;
+    let rows = [];
+
+    function renderSummary(summary, progressText = '') {
       summaryEl.innerHTML = `
         <strong>汇总</strong><br>
+        ${progressText}<br>
         总数: ${summary.total} / 有FB: ${summary.hasFb} / 无FB: ${summary.noFb} / 待复查: ${summary.unknown} / 异常: ${summary.error}
       `;
+    }
 
-      const rows = results.map(r => `
+    function renderTable() {
+      const tableRows = rows.map(r => `
         <tr>
           <td>${r.index}</td>
           <td>${r.phone}</td>
@@ -72,9 +79,18 @@
               <th>Final URL</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>${tableRows}</tbody>
         </table>
       `;
+    }
+
+    function cleanupStream() {
+      if (es) {
+        es.close();
+        es = null;
+      }
+      runBtn.disabled = false;
+      stopBtn.disabled = true;
     }
 
     runBtn.addEventListener('click', async () => {
@@ -85,26 +101,46 @@
         return;
       }
 
-      runBtn.disabled = true;
-      statusEl.textContent = '检测中，请稍等...';
-      summaryEl.innerHTML = '';
+      rows = [];
       resultsEl.innerHTML = '';
+      summaryEl.innerHTML = '';
+      statusEl.textContent = '准备开始...';
+      runBtn.disabled = true;
+      stopBtn.disabled = false;
 
-      try {
-        const resp = await fetch('/api/check', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phones, delayMs })
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'request failed');
+      const params = new URLSearchParams({ phones, delayMs: String(delayMs) });
+      es = new EventSource(`/api/check-stream?${params.toString()}`);
+
+      es.addEventListener('start', (e) => {
+        const data = JSON.parse(e.data);
+        statusEl.textContent = `检测中，总数 ${data.total}`;
+        renderSummary({ total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: 0 / ${data.total}`);
+      });
+
+      es.addEventListener('result', (e) => {
+        const data = JSON.parse(e.data);
+        rows.push(data.result);
+        renderSummary(data.summary, `进度: ${rows.length}`);
+        renderTable();
+        statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
+      });
+
+      es.addEventListener('done', (e) => {
+        const data = JSON.parse(e.data);
+        renderSummary(data.summary, `进度: ${data.results.length} / ${data.results.length}`);
         statusEl.textContent = '检测完成';
-        renderResults(data);
-      } catch (e) {
-        statusEl.textContent = '检测失败: ' + e.message;
-      } finally {
-        runBtn.disabled = false;
-      }
+        cleanupStream();
+      });
+
+      es.addEventListener('error', (e) => {
+        statusEl.textContent = '流式检测异常或连接结束';
+        cleanupStream();
+      });
+    });
+
+    stopBtn.addEventListener('click', () => {
+      statusEl.textContent = '已手动停止';
+      cleanupStream();
     });
   </script>
 </body>
