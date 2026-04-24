@@ -56,6 +56,39 @@ function createSummary(results) {
   };
 }
 
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36'
+];
+const LOCALES = ['en-US', 'zh-CN', 'en-GB'];
+const TIMEZONES = ['Asia/Shanghai', 'America/Los_Angeles', 'Europe/London'];
+const VIEWPORTS = [
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1536, height: 864 }
+];
+const COLOR_SCHEMES = ['light', 'dark'];
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function jitter(base, spread = 0.35) {
+  const factor = 1 + ((Math.random() * 2 - 1) * spread);
+  return Math.max(50, Math.round(base * factor));
+}
+
+function createProfile() {
+  return {
+    userAgent: pick(USER_AGENTS),
+    locale: pick(LOCALES),
+    timezoneId: pick(TIMEZONES),
+    viewport: pick(VIEWPORTS),
+    colorScheme: pick(COLOR_SCHEMES),
+  };
+}
+
 function jobSnapshot(job) {
   return {
     jobId: job.id,
@@ -80,6 +113,7 @@ async function createBrowser() {
 }
 
 async function checkPhone(browser, phone) {
+  const profile = createProfile();
   let context = null;
   let page = null;
   let text = '';
@@ -89,18 +123,24 @@ async function checkPhone(browser, phone) {
 
   try {
     await withTimeout((async () => {
-      context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+      context = await browser.newContext({
+        viewport: profile.viewport,
+        userAgent: profile.userAgent,
+        locale: profile.locale,
+        timezoneId: profile.timezoneId,
+        colorScheme: profile.colorScheme,
+      });
       page = await context.newPage();
       await page.goto(initialUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(jitter(2000));
       const input = page.locator('input[type="text"], input[type="email"], input[name="email"]').first();
       await input.waitFor({ state: 'visible', timeout: 15000 });
       await input.fill(phone);
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(jitter(400));
       const button = page.getByRole('button', { name: /继续|Continue/i }).first();
-      await button.click({ timeout: 10000 });
+      await button.click({ timeout: 10000, delay: jitter(80) });
       await page.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => {});
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(jitter(2500));
       text = await withTimeout(page.locator('body').innerText().catch(() => ''), 10000, 'read body text');
       finalUrl = page.url();
       title = await withTimeout(page.title().catch(() => ''), 5000, 'read title');
@@ -108,9 +148,9 @@ async function checkPhone(browser, phone) {
 
     const visibleTextSnippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500);
     const classified = classifyResult({ initialUrl, finalUrl, text });
-    return { phone, status: classified.status, reason: classified.reason, matchedRule: classified.matchedRule, title, initialUrl, finalUrl, urlChanged: initialUrl !== finalUrl, visibleTextSnippet, error: null, checkedAt: new Date().toISOString() };
+    return { phone, status: classified.status, reason: classified.reason, matchedRule: classified.matchedRule, title, initialUrl, finalUrl, urlChanged: initialUrl !== finalUrl, visibleTextSnippet, profile, error: null, checkedAt: new Date().toISOString() };
   } catch (e) {
-    return { phone, status: 'ERROR', reason: 'runtime error', matchedRule: 'runtime_error', title, initialUrl, finalUrl, urlChanged: initialUrl !== finalUrl, visibleTextSnippet: String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500), error: String(e && e.stack ? e.stack : e), checkedAt: new Date().toISOString() };
+    return { phone, status: 'ERROR', reason: 'runtime error', matchedRule: 'runtime_error', title, initialUrl, finalUrl, urlChanged: initialUrl !== finalUrl, visibleTextSnippet: String(text || '').replace(/\s+/g, ' ').trim().slice(0, 500), profile, error: String(e && e.stack ? e.stack : e), checkedAt: new Date().toISOString() };
   } finally {
     if (context) await withTimeout(context.close().catch(() => {}), 10000, 'context close').catch(() => {});
   }
@@ -324,6 +364,10 @@ app.post('/api/export.xlsx', async (req, res) => {
     FinalUrl: r.finalUrl || '',
     UrlChanged: r.urlChanged ? 'true' : 'false',
     VisibleTextSnippet: r.visibleTextSnippet || '',
+    UserAgent: r.profile?.userAgent || '',
+    Locale: r.profile?.locale || '',
+    Timezone: r.profile?.timezoneId || '',
+    Viewport: r.profile?.viewport ? `${r.profile.viewport.width}x${r.profile.viewport.height}` : '',
     CheckedAt: r.checkedAt || '',
     Error: r.error || ''
   }));

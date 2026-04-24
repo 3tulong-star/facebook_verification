@@ -109,6 +109,8 @@
             <div class="small">rule: ${r.matchedRule || ''}</div>
             <div class="small">title: ${r.title || ''}</div>
             <div class="small">urlChanged: ${r.urlChanged ? 'true' : 'false'}</div>
+            <div class="small">ua: ${r.profile?.userAgent || ''}</div>
+            <div class="small">locale/tz: ${r.profile?.locale || ''} / ${r.profile?.timezoneId || ''}</div>
             ${r.error ? `<div class="small">error: ${String(r.error).slice(0, 500)}</div>` : ''}
           </td>
           <td><div class="small">from: ${r.initialUrl || ''}</div><div>${r.finalUrl || ''}</div></td>
