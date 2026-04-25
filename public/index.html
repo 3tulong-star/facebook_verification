@@ -373,6 +373,10 @@
           <input id="excelFile" class="file-input" type="file" accept=".xlsx,.xls,.csv" />
           <button id="importBtn" class="btn btn-secondary" type="button">读取 Excel</button>
         </div>
+        <div id="columnPickerWrap" style="display:none; margin-bottom:12px;">
+          <label for="columnPicker">选择手机号列</label>
+          <select id="columnPicker"></select>
+        </div>
         <textarea id="phones" placeholder="8613812345678&#10;8615012345678"></textarea>
         <div id="inputNote" class="note">当前 0 条</div>
       </section>
@@ -433,6 +437,8 @@
     const logBtn = document.getElementById('logBtn');
     const importBtn = document.getElementById('importBtn');
     const excelFile = document.getElementById('excelFile');
+    const columnPickerWrap = document.getElementById('columnPickerWrap');
+    const columnPicker = document.getElementById('columnPicker');
     const phonesEl = document.getElementById('phones');
     const delayEl = document.getElementById('delayMs');
     const concurrencyEl = document.getElementById('concurrency');
@@ -462,9 +468,10 @@
     let startedAt = null;
     let autoRecheckStarted = false;
     let finalDone = false;
+    let importedFileBase64 = '';
 
     function normalizeInputPhones() {
-      return [...new Set(phonesEl.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean))];
+      return [...new Set(phonesEl.value.split(/\r?\n/).map(s => s.replace(/\D+/g, '')).filter(Boolean))];
     }
 
     function computeSummary() {
@@ -502,6 +509,7 @@
       stopBtn.disabled = !isBusy;
       importBtn.disabled = isBusy;
       excelFile.disabled = isBusy;
+      columnPicker.disabled = isBusy;
       phonesEl.disabled = isBusy;
       delayEl.disabled = isBusy;
       concurrencyEl.disabled = isBusy;
@@ -729,6 +737,33 @@
       URL.revokeObjectURL(url);
     }
 
+    function renderColumns(columns, selectedColumnIndex = 0) {
+      columnPicker.innerHTML = '';
+      for (const column of columns || []) {
+        const option = document.createElement('option');
+        option.value = String(column.index);
+        option.textContent = `${column.label} (${column.normalizedCount} 条)`;
+        columnPicker.appendChild(option);
+      }
+      columnPicker.value = String(selectedColumnIndex);
+      columnPickerWrap.style.display = columns?.length ? 'block' : 'none';
+    }
+
+    async function importSelectedColumn(columnIndex = 0) {
+      if (!importedFileBase64) throw new Error('请先选择文件');
+      const resp = await fetch('/api/import.xlsx', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileBase64: importedFileBase64, columnIndex })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || '导入失败');
+      renderColumns(data.columns, data.selectedColumnIndex);
+      phonesEl.value = data.phones.join('\n');
+      inputNote.textContent = `当前 ${data.total} 条，已按 ${data.columns?.[data.selectedColumnIndex]?.name || 'A'} 列标准化为纯数字`;
+      updateDashboard();
+    }
+
     phonesEl.addEventListener('input', () => {
       updateInputCount();
       updateDashboard();
@@ -743,21 +778,24 @@
       clearError();
       importBtn.disabled = true;
       try {
-        const fileBase64 = await readFileAsBase64(file);
-        const resp = await fetch('/api/import.xlsx', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileBase64 })
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || '导入失败');
-        phonesEl.value = data.phones.join('\n');
-        updateInputCount();
-        updateDashboard();
+        importedFileBase64 = await readFileAsBase64(file);
+        await importSelectedColumn(0);
       } catch (e) {
         showError(e.message);
       } finally {
         importBtn.disabled = false;
+      }
+    });
+
+    columnPicker.addEventListener('change', async () => {
+      clearError();
+      columnPicker.disabled = true;
+      try {
+        await importSelectedColumn(Number(columnPicker.value || 0));
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        columnPicker.disabled = false;
       }
     });
 
@@ -771,6 +809,8 @@
         showError('请先输入号码');
         return;
       }
+      phonesEl.value = phones.join('\n');
+      updateInputCount();
 
       rows = [];
       currentJobId = null;

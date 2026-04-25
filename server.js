@@ -22,12 +22,41 @@ function normalizePhones(text) {
   return [...new Set(String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean))];
 }
 
-function extractPhonesFromWorkbook(buffer) {
+function normalizePhoneDigits(value) {
+  return String(value || '').replace(/\D+/g, '');
+}
+
+function columnName(index) {
+  let name = '';
+  let n = index + 1;
+  while (n > 0) {
+    const mod = (n - 1) % 26;
+    name = String.fromCharCode(65 + mod) + name;
+    n = Math.floor((n - mod) / 26);
+  }
+  return name;
+}
+
+function parseWorkbook(buffer, columnIndex = 0) {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
-  if (!sheetName) return [];
+  if (!sheetName) return { sheetName: '', columns: [], phones: [] };
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, blankrows: false });
-  return [...new Set(rows.map(row => String(row?.[0] || '').trim()).filter(Boolean))];
+  const maxColumns = rows.reduce((max, row) => Math.max(max, Array.isArray(row) ? row.length : 0), 0);
+  const columns = Array.from({ length: maxColumns }, (_unused, index) => {
+    const samples = rows.map(row => String(row?.[index] || '').trim()).filter(Boolean);
+    const digits = rows.map(row => normalizePhoneDigits(row?.[index])).filter(Boolean);
+    const firstValue = samples[0] || '';
+    return {
+      index,
+      name: columnName(index),
+      label: firstValue ? `${columnName(index)} - ${firstValue.slice(0, 24)}` : columnName(index),
+      nonEmpty: samples.length,
+      normalizedCount: [...new Set(digits)].length,
+    };
+  });
+  const phones = [...new Set(rows.map(row => normalizePhoneDigits(row?.[columnIndex])).filter(Boolean))];
+  return { sheetName, columns, phones };
 }
 
 function chunkArray(arr, size) {
@@ -478,10 +507,11 @@ app.post('/api/recheck', async (req, res) => {
 
 app.post('/api/import.xlsx', async (req, res) => {
   const raw = String(req.body?.fileBase64 || '').replace(/^data:.*?;base64,/, '');
+  const columnIndex = Math.max(0, Number(req.body?.columnIndex || 0));
   if (!raw) return res.status(400).json({ error: 'No file provided' });
   try {
-    const phones = extractPhonesFromWorkbook(Buffer.from(raw, 'base64'));
-    res.json({ total: phones.length, phones });
+    const parsed = parseWorkbook(Buffer.from(raw, 'base64'), columnIndex);
+    res.json({ ...parsed, total: parsed.phones.length, selectedColumnIndex: columnIndex });
   } catch (e) {
     res.status(400).json({ error: String(e && e.stack ? e.stack : e) });
   }
