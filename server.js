@@ -15,11 +15,19 @@ const LOG_DIR = path.join(__dirname, 'logs');
 const MAX_JOB_CONCURRENCY = 6;
 const MAX_RECHECK_CONCURRENCY = 2;
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 function normalizePhones(text) {
   return [...new Set(String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean))];
+}
+
+function extractPhonesFromWorkbook(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) return [];
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, blankrows: false });
+  return [...new Set(rows.map(row => String(row?.[0] || '').trim()).filter(Boolean))];
 }
 
 function chunkArray(arr, size) {
@@ -390,6 +398,19 @@ app.get('/api/jobs/:jobId', async (req, res) => {
   res.json({ ...jobSnapshot(job), recentResults: job.results.slice(-20) });
 });
 
+app.get('/api/jobs/:jobId/logs', async (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job || !job.logFile) return res.status(404).json({ error: 'Job log not found' });
+  try {
+    const content = await fs.readFile(job.logFile, 'utf8');
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${job.id}.jsonl"`);
+    res.send(content);
+  } catch (e) {
+    res.status(404).json({ error: String(e && e.stack ? e.stack : e) });
+  }
+});
+
 app.get('/api/jobs/:jobId/stream', async (req, res) => {
   const job = jobs.get(req.params.jobId);
   if (!job) return res.status(404).end('Job not found');
@@ -440,11 +461,29 @@ app.post('/api/recheck', async (req, res) => {
   const delayMs = Math.max(300, Math.min(Number(req.body?.delayMs || 1500), 10000));
   const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), MAX_RECHECK_CONCURRENCY));
   if (!phones.length) return res.status(400).json({ error: 'No phones provided' });
+  const job = req.body?.jobId ? jobs.get(req.body.jobId) : null;
   try {
+    if (job) await appendJobLog(job, 'recheck_start', { phones, settings: { delayMs, concurrency } });
     const results = (await runChecks({ phones, delayMs, concurrency })).map(addObservationFlags);
+    if (job) {
+      for (const result of results) await appendJobLog(job, 'recheck_result', { result: compactResultForLog(result) });
+      await appendJobLog(job, 'recheck_done', { summary: createSummary(results), results: results.map(compactResultForLog) });
+    }
     res.json({ summary: createSummary(results), results });
   } catch (e) {
+    if (job) await appendJobLog(job, 'recheck_error', { error: String(e && e.stack ? e.stack : e) }).catch(() => {});
     res.status(500).json({ error: String(e && e.stack ? e.stack : e) });
+  }
+});
+
+app.post('/api/import.xlsx', async (req, res) => {
+  const raw = String(req.body?.fileBase64 || '').replace(/^data:.*?;base64,/, '');
+  if (!raw) return res.status(400).json({ error: 'No file provided' });
+  try {
+    const phones = extractPhonesFromWorkbook(Buffer.from(raw, 'base64'));
+    res.json({ total: phones.length, phones });
+  } catch (e) {
+    res.status(400).json({ error: String(e && e.stack ? e.stack : e) });
   }
 });
 

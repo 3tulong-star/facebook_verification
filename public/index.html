@@ -5,75 +5,453 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Facebook Phone Checker</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 1180px; margin: 24px auto; padding: 0 16px; }
-    textarea { width: 100%; height: 220px; }
-    input, button, select { padding: 8px 12px; margin-right: 8px; margin-top: 6px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; font-size: 14px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
-    th { background: #f5f5f5; }
-    .HAS_FB { color: #0a7a2f; font-weight: bold; }
-    .NO_FB { color: #b42318; font-weight: bold; }
-    .UNKNOWN, .ERROR { color: #9a6700; font-weight: bold; }
-    .muted { color: #666; }
-    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; }
-    .small { font-size:12px; color:#666; }
+    :root {
+      color-scheme: light;
+      --bg: #f5f5f7;
+      --panel: rgba(255, 255, 255, 0.86);
+      --panel-strong: #fff;
+      --text: #1d1d1f;
+      --muted: #6e6e73;
+      --line: rgba(0, 0, 0, 0.10);
+      --blue: #0071e3;
+      --blue-dark: #005bb5;
+      --green: #248a3d;
+      --red: #d70015;
+      --amber: #a25b00;
+      --shadow: 0 18px 46px rgba(0, 0, 0, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+
+    button, input, select, textarea {
+      font: inherit;
+    }
+
+    .app {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 34px 0 46px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.02;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 38px;
+      padding: 8px 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .progress-panel {
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .progress-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+
+    .progress-title {
+      font-size: 19px;
+      font-weight: 650;
+    }
+
+    .progress-subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .progress-percent {
+      font-size: 24px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .progress-track {
+      height: 12px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e8e8ed;
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #0071e3, #40a9ff);
+      transition: width 240ms ease;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    .metric {
+      padding: 16px;
+      min-height: 98px;
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-size: 27px;
+      line-height: 1;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere;
+    }
+
+    .metric-value.green { color: var(--green); }
+    .metric-value.red { color: var(--red); }
+    .metric-value.amber { color: var(--amber); }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .section {
+      padding: 20px;
+    }
+
+    .section + .section {
+      margin-top: 16px;
+    }
+
+    .section-title {
+      margin: 0 0 14px;
+      font-size: 19px;
+      font-weight: 650;
+    }
+
+    .file-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .file-input {
+      width: 100%;
+      min-height: 44px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--muted);
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 230px;
+      resize: vertical;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      line-height: 1.45;
+      outline: none;
+    }
+
+    textarea:focus,
+    input:focus,
+    select:focus {
+      border-color: rgba(0, 113, 227, 0.65);
+      box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.12);
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    input[type="number"], select {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .btn {
+      min-height: 44px;
+      border: 0;
+      border-radius: 8px;
+      padding: 0 14px;
+      cursor: pointer;
+      font-weight: 650;
+      transition: transform 140ms ease, background 140ms ease, opacity 140ms ease;
+    }
+
+    .btn:active { transform: scale(0.98); }
+
+    .btn-primary {
+      background: var(--blue);
+      color: #fff;
+    }
+
+    .btn-primary:hover { background: var(--blue-dark); }
+
+    .btn-secondary {
+      background: #e8e8ed;
+      color: var(--text);
+    }
+
+    .btn-secondary:hover { background: #dedee4; }
+
+    .btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+      transform: none;
+    }
+
+    .note {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .error {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid rgba(215, 0, 21, 0.18);
+      border-radius: 8px;
+      background: rgba(255, 59, 48, 0.08);
+      color: var(--red);
+      white-space: pre-wrap;
+      font-size: 13px;
+    }
+
+    @media (max-width: 960px) {
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workspace { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 560px) {
+      .app { width: min(100% - 20px, 1180px); padding-top: 22px; }
+      .metrics { grid-template-columns: 1fr; }
+      .controls, .actions, .file-row { grid-template-columns: 1fr; }
+      .metric { min-height: 82px; }
+    }
   </style>
 </head>
 <body>
-  <h1>Facebook 手机号检测</h1>
-  <p class="muted">支持分批执行：每批独立跑，批次间暂停，降低长任务后半段失真概率。</p>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1>Facebook Checker</h1>
+        <p class="subtitle">批量检测控制台</p>
+      </div>
+      <div id="statusPill" class="status-pill">待开始</div>
+    </header>
 
-  <div>
-    <label>号码列表</label>
-    <textarea id="phones" placeholder="8613812345678&#10;8615012345678"></textarea>
-  </div>
+    <section class="panel progress-panel">
+      <div class="progress-head">
+        <div>
+          <div id="progressTitle" class="progress-title">准备就绪</div>
+          <div id="progressDetail" class="progress-subtitle">0 / 0</div>
+        </div>
+        <div id="progressPercent" class="progress-percent">0%</div>
+      </div>
+      <div class="progress-track">
+        <div id="progressFill" class="progress-fill"></div>
+      </div>
+    </section>
 
-  <div class="toolbar">
-    <label>单号间隔(ms)</label>
-    <input id="delayMs" type="number" value="1500" min="300" max="10000" />
+    <section class="metrics">
+      <div class="metric">
+        <div class="metric-label">总数</div>
+        <div id="totalMetric" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">已处理</div>
+        <div id="processedMetric" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">预计剩余</div>
+        <div id="etaMetric" class="metric-value">--</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">每分钟</div>
+        <div id="rateMetric" class="metric-value">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">有FB比例</div>
+        <div id="hasRatioMetric" class="metric-value green">0%</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">最近50有FB</div>
+        <div id="recentRatioMetric" class="metric-value green">0%</div>
+      </div>
+    </section>
 
-    <label>并发</label>
-    <select id="concurrency">
-      <option value="1">1</option>
-      <option value="2">2</option>
-      <option value="3">3</option>
-      <option value="4" selected>4</option>
-      <option value="5">5</option>
-      <option value="6">6</option>
-    </select>
+    <div class="workspace">
+      <section class="panel section">
+        <h2 class="section-title">输入</h2>
+        <div class="file-row">
+          <input id="excelFile" class="file-input" type="file" accept=".xlsx,.xls,.csv" />
+          <button id="importBtn" class="btn btn-secondary" type="button">读取 Excel</button>
+        </div>
+        <textarea id="phones" placeholder="8613812345678&#10;8615012345678"></textarea>
+        <div id="inputNote" class="note">当前 0 条</div>
+      </section>
 
-    <label>每批数量</label>
-    <input id="batchSize" type="number" value="80" min="10" max="200" />
+      <aside>
+        <section class="panel section">
+          <h2 class="section-title">参数</h2>
+          <div class="controls">
+            <div>
+              <label for="delayMs">单号间隔(ms)</label>
+              <input id="delayMs" type="number" value="1500" min="300" max="10000" />
+            </div>
+            <div>
+              <label for="concurrency">并发</label>
+              <select id="concurrency">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4" selected>4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+            </div>
+            <div>
+              <label for="batchSize">每批数量</label>
+              <input id="batchSize" type="number" value="80" min="10" max="200" />
+            </div>
+            <div>
+              <label for="batchPauseMs">批次暂停(ms)</label>
+              <input id="batchPauseMs" type="number" value="15000" min="0" max="120000" />
+            </div>
+          </div>
+          <div class="actions">
+            <button id="runBtn" class="btn btn-primary" type="button">开始</button>
+            <button id="stopBtn" class="btn btn-secondary" type="button" disabled>停止监听</button>
+          </div>
+        </section>
 
-    <label>批次暂停(ms)</label>
-    <input id="batchPauseMs" type="number" value="15000" min="0" max="120000" />
+        <section class="panel section">
+          <h2 class="section-title">导出</h2>
+          <div class="actions">
+            <button id="exportBtn" class="btn btn-secondary" type="button" disabled>结果 Excel</button>
+            <button id="logBtn" class="btn btn-secondary" type="button" disabled>运行日志</button>
+          </div>
+          <div id="summaryText" class="note">有FB 0 / 无FB 0 / 不确定 0 / 异常 0</div>
+          <div id="logPath" class="note"></div>
+        </section>
+      </aside>
+    </div>
 
-    <button id="runBtn">开始检测</button>
-    <button id="stopBtn" disabled>停止监听</button>
-    <button id="exportBtn" disabled>导出 Excel</button>
-    <button id="recheckBtn" disabled>复查不确定</button>
-  </div>
-
-  <div id="status" style="margin-top:16px;"></div>
-  <div id="logPath" class="small" style="margin-top:8px;"></div>
-  <pre id="errorBox" style="margin-top:12px; white-space:pre-wrap; color:#b42318; background:#fff5f5; padding:12px; border:1px solid #f5c2c7; display:none;"></pre>
-  <div id="summary" style="margin-top:12px;"></div>
-  <div id="results"></div>
+    <pre id="errorBox" class="error"></pre>
+  </main>
 
   <script>
     const runBtn = document.getElementById('runBtn');
     const stopBtn = document.getElementById('stopBtn');
     const exportBtn = document.getElementById('exportBtn');
-    const recheckBtn = document.getElementById('recheckBtn');
+    const logBtn = document.getElementById('logBtn');
+    const importBtn = document.getElementById('importBtn');
+    const excelFile = document.getElementById('excelFile');
     const phonesEl = document.getElementById('phones');
     const delayEl = document.getElementById('delayMs');
     const concurrencyEl = document.getElementById('concurrency');
     const batchSizeEl = document.getElementById('batchSize');
     const batchPauseEl = document.getElementById('batchPauseMs');
-    const statusEl = document.getElementById('status');
+    const statusPill = document.getElementById('statusPill');
+    const progressTitle = document.getElementById('progressTitle');
+    const progressDetail = document.getElementById('progressDetail');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressFill = document.getElementById('progressFill');
+    const totalMetric = document.getElementById('totalMetric');
+    const processedMetric = document.getElementById('processedMetric');
+    const etaMetric = document.getElementById('etaMetric');
+    const rateMetric = document.getElementById('rateMetric');
+    const hasRatioMetric = document.getElementById('hasRatioMetric');
+    const recentRatioMetric = document.getElementById('recentRatioMetric');
+    const inputNote = document.getElementById('inputNote');
+    const summaryText = document.getElementById('summaryText');
     const logPathEl = document.getElementById('logPath');
-    const summaryEl = document.getElementById('summary');
-    const resultsEl = document.getElementById('results');
     const errorBox = document.getElementById('errorBox');
 
     let es = null;
@@ -81,6 +459,13 @@
     let currentJobId = null;
     let reconnectTimer = null;
     let userStopped = false;
+    let startedAt = null;
+    let autoRecheckStarted = false;
+    let finalDone = false;
+
+    function normalizeInputPhones() {
+      return [...new Set(phonesEl.value.split(/\r?\n/).map(s => s.trim()).filter(Boolean))];
+    }
 
     function computeSummary() {
       return {
@@ -94,61 +479,82 @@
       };
     }
 
-    function renderSummary(summary, progressText = '') {
-      summaryEl.innerHTML = `
-        <strong>汇总</strong><br>
-        ${progressText}<br>
-        总数: ${summary.total} / 有FB: ${summary.hasFb} / 无FB: ${summary.noFb} / 不确定: ${summary.unknown} / 异常: ${summary.error} / 待复查: ${summary.needsRecheck || 0} / 低置信: ${summary.lowConfidence || 0}
-      `;
-      exportBtn.disabled = rows.length === 0;
-      recheckBtn.disabled = !rows.some(r => r.needsRecheck || r.status === 'UNKNOWN' || r.status === 'ERROR');
+    function formatDuration(ms) {
+      if (!Number.isFinite(ms) || ms <= 0) return '--';
+      const totalSeconds = Math.ceil(ms / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      if (minutes >= 60) {
+        const hours = Math.floor(minutes / 60);
+        const restMinutes = minutes % 60;
+        return `${hours}h ${restMinutes}m`;
+      }
+      return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
     }
 
-    function renderTable() {
-      const tableRows = rows.map(r => `
-        <tr>
-          <td>${r.index}</td>
-          <td>${r.phone}</td>
-          <td class="${r.status}">${r.status}</td>
-          <td>
-            ${r.reason || ''}
-            <div class="small">rule: ${r.matchedRule || ''}</div>
-            <div class="small">confidence: ${r.confidence || ''}</div>
-            <div class="small">needsRecheck: ${r.needsRecheck ? 'true' : 'false'}</div>
-            <div class="small">flags: ${Array.isArray(r.observationFlags) ? r.observationFlags.join(',') : ''}</div>
-            <div class="small">title: ${r.title || ''}</div>
-            <div class="small">urlChanged: ${r.urlChanged ? 'true' : 'false'}</div>
-            <div class="small">ua: ${r.profile?.userAgent || ''}</div>
-            <div class="small">locale/tz: ${r.profile?.locale || ''} / ${r.profile?.timezoneId || ''}</div>
-            ${r.error ? `<div class="small">error: ${String(r.error).slice(0, 500)}</div>` : ''}
-          </td>
-          <td><div class="small">from: ${r.initialUrl || ''}</div><div>${r.finalUrl || ''}</div></td>
-          <td>${r.visibleTextSnippet || ''}</td>
-        </tr>
-      `).join('');
+    function percent(value, total) {
+      if (!total) return '0%';
+      return `${Math.round((value / total) * 100)}%`;
+    }
 
-      resultsEl.innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Phone</th>
-              <th>Status</th>
-              <th>Diagnosis</th>
-              <th>URL</th>
-              <th>Visible Text Snippet</th>
-            </tr>
-          </thead>
-          <tbody>${tableRows}</tbody>
-        </table>
-      `;
+    function setBusy(isBusy) {
+      runBtn.disabled = isBusy;
+      stopBtn.disabled = !isBusy;
+      importBtn.disabled = isBusy;
+      excelFile.disabled = isBusy;
+      phonesEl.disabled = isBusy;
+      delayEl.disabled = isBusy;
+      concurrencyEl.disabled = isBusy;
+      batchSizeEl.disabled = isBusy;
+      batchPauseEl.disabled = isBusy;
+    }
+
+    function updateInputCount() {
+      inputNote.textContent = `当前 ${normalizeInputPhones().length} 条`;
+    }
+
+    function updateDashboard({ title = null, detail = null, totalOverride = null } = {}) {
+      const inputTotal = totalOverride ?? normalizeInputPhones().length;
+      const total = Math.max(inputTotal, rows.length);
+      const processed = rows.length;
+      const summary = computeSummary();
+      const progress = total ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+      const elapsedMs = startedAt ? Date.now() - startedAt : 0;
+      const perMinute = elapsedMs > 0 ? processed / (elapsedMs / 60000) : 0;
+      const etaMs = perMinute > 0 && total > processed ? ((total - processed) / perMinute) * 60000 : 0;
+      const recent = rows.slice(-50);
+      const recentHas = recent.filter(r => r.status === 'HAS_FB').length;
+
+      progressTitle.textContent = title || (finalDone ? '已完成' : currentJobId ? '运行中' : '准备就绪');
+      progressDetail.textContent = detail || `${processed} / ${total}`;
+      progressPercent.textContent = `${progress}%`;
+      progressFill.style.width = `${progress}%`;
+
+      totalMetric.textContent = total;
+      processedMetric.textContent = processed;
+      etaMetric.textContent = formatDuration(etaMs);
+      rateMetric.textContent = perMinute ? perMinute.toFixed(1) : '0';
+      hasRatioMetric.textContent = percent(summary.hasFb, processed);
+      recentRatioMetric.textContent = percent(recentHas, recent.length);
+      summaryText.textContent = `有FB ${summary.hasFb} / 无FB ${summary.noFb} / 不确定 ${summary.unknown} / 异常 ${summary.error} / 待复查 ${summary.needsRecheck}`;
+      exportBtn.disabled = rows.length === 0;
+      logBtn.disabled = !currentJobId;
+    }
+
+    function showError(message) {
+      errorBox.style.display = 'block';
+      errorBox.textContent = message;
+    }
+
+    function clearError() {
+      errorBox.style.display = 'none';
+      errorBox.textContent = '';
     }
 
     function cleanupStream() {
       if (es) { es.close(); es = null; }
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-      runBtn.disabled = false;
-      stopBtn.disabled = true;
+      setBusy(false);
     }
 
     async function fetchJobStatus() {
@@ -171,25 +577,23 @@
         try {
           const status = await fetchJobStatus();
           if (!status) return;
-          renderSummary(status.summary, `进度: ${status.progress.current} / ${status.progress.total} | 批次: ${status.currentBatch} / ${status.totalBatches}`);
           if (status.status === 'done') {
-            statusEl.textContent = '任务已完成，自动恢复状态成功';
+            statusPill.textContent = '主任务完成';
             cleanupStream();
+            await runAutoRecheck();
             return;
           }
           if (status.status === 'error') {
-            errorBox.style.display = 'block';
-            errorBox.textContent = status.error || '任务失败，但未返回详细错误';
-            statusEl.textContent = '任务失败';
+            showError(status.error || '任务失败');
+            statusPill.textContent = '任务失败';
             cleanupStream();
             return;
           }
-          statusEl.textContent = '流断开，任务仍在运行，正在自动重连...';
+          statusPill.textContent = '自动重连';
           connectStream(currentJobId);
         } catch (e) {
-          errorBox.style.display = 'block';
-          errorBox.textContent = `自动重连失败: ${e.message}`;
-          statusEl.textContent = '自动重连失败';
+          showError(`自动重连失败: ${e.message}`);
+          statusPill.textContent = '重连失败';
           cleanupStream();
         }
       }, 3000);
@@ -201,113 +605,209 @@
 
       es.addEventListener('start', (e) => {
         const data = JSON.parse(e.data);
-        statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}，jobId=${data.jobId}`;
-        logPathEl.textContent = data.logFile ? `本地日志: ${data.logFile}` : '';
-        renderSummary(data.summary || { total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: ${data.progress?.current || 0} / ${data.progress?.total || data.total} | 批次: ${data.currentBatch || 0} / ${data.totalBatches || 0}`);
+        statusPill.textContent = '检测中';
+        logPathEl.textContent = data.logFile ? `日志: ${data.logFile}` : '';
+        updateDashboard({ title: '检测中', detail: `${data.progress?.current || 0} / ${data.total}`, totalOverride: data.total });
       });
 
       es.addEventListener('batch', (e) => {
         const data = JSON.parse(e.data);
-        statusEl.textContent = data.message || `批次 ${data.batchIndex}/${data.batchCount}`;
-        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total} | 批次: ${data.currentBatch} / ${data.totalBatches}`);
+        statusPill.textContent = `批次 ${data.currentBatch}/${data.totalBatches}`;
+        updateDashboard({ title: '检测中', detail: `${data.progress.current} / ${data.progress.total} · 批次 ${data.currentBatch}/${data.totalBatches}`, totalOverride: data.total });
       });
 
       es.addEventListener('pause', (e) => {
         const data = JSON.parse(e.data);
-        statusEl.textContent = data.message || `批次暂停 ${data.pauseMs}ms`;
+        statusPill.textContent = `暂停 ${Math.round((data.pauseMs || 0) / 1000)}s`;
+        updateDashboard({ title: '批次暂停', detail: `${data.progress.current} / ${data.progress.total}`, totalOverride: data.total });
       });
 
       es.addEventListener('result', (e) => {
         const data = JSON.parse(e.data);
         upsertRow(data.result);
-        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total} | 批次: ${data.currentBatch} / ${data.totalBatches}`);
-        renderTable();
-        statusEl.textContent = `检测中，最新: ${data.result.phone} -> ${data.result.status}`;
+        statusPill.textContent = `${data.result.status}`;
+        updateDashboard({ title: '检测中', detail: `${data.progress.current} / ${data.progress.total} · 批次 ${data.currentBatch}/${data.totalBatches}`, totalOverride: data.total });
       });
 
       es.addEventListener('ping', () => {
-        statusEl.textContent = '检测中（连接保活中）';
+        statusPill.textContent = '连接正常';
       });
 
-      es.addEventListener('done', (e) => {
+      es.addEventListener('done', async (e) => {
         const data = JSON.parse(e.data);
         rows = data.results || rows;
-        renderSummary(data.summary, `进度: ${data.progress.current} / ${data.progress.total} | 批次: ${data.currentBatch} / ${data.totalBatches}`);
-        renderTable();
-        statusEl.textContent = '检测完成';
+        updateDashboard({ title: '主任务完成', detail: `${data.progress.current} / ${data.progress.total}`, totalOverride: data.total });
         cleanupStream();
+        await runAutoRecheck();
       });
 
       es.addEventListener('error', (e) => {
         let explicitError = null;
         try {
-          if (e.data) {
-            const data = JSON.parse(e.data);
-            explicitError = data.error || null;
-          }
+          if (e.data) explicitError = JSON.parse(e.data).error || null;
         } catch {}
         if (explicitError) {
-          errorBox.style.display = 'block';
-          errorBox.textContent = explicitError;
-          statusEl.textContent = '任务失败';
+          showError(explicitError);
+          statusPill.textContent = '任务失败';
           cleanupStream();
           return;
         }
-        errorBox.style.display = 'block';
-        errorBox.textContent = 'SSE 连接断开。正在查询任务状态并尝试自动重连；如果任务仍在跑，会继续接上。';
+        statusPill.textContent = '连接断开';
         scheduleReconnect();
       });
     }
 
+    async function runAutoRecheck() {
+      if (autoRecheckStarted) return;
+      autoRecheckStarted = true;
+      const targets = rows.filter(r => r.needsRecheck || r.status === 'UNKNOWN' || r.status === 'ERROR').map(r => r.phone);
+      if (!targets.length) {
+        finalDone = true;
+        statusPill.textContent = '已完成';
+        updateDashboard({ title: '已完成', detail: `${rows.length} / ${rows.length}` });
+        return;
+      }
+
+      setBusy(true);
+      statusPill.textContent = '自动复查';
+      updateDashboard({ title: '自动复查中', detail: `${targets.length} 条` });
+      try {
+        const resp = await fetch('/api/recheck', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId: currentJobId,
+            phones: targets.join('\n'),
+            delayMs: Number(delayEl.value || 1500),
+            concurrency: Number(concurrencyEl.value || 1)
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || '复查失败');
+
+        for (const updated of data.results) {
+          const idx = rows.findIndex(r => r.phone === updated.phone);
+          if (idx >= 0) rows[idx] = { ...rows[idx], ...updated, index: rows[idx].index };
+        }
+        rows.sort((a, b) => a.index - b.index);
+        finalDone = true;
+        statusPill.textContent = '已完成';
+        updateDashboard({ title: '已完成', detail: `${rows.length} / ${rows.length}` });
+      } catch (e) {
+        showError(e.message);
+        statusPill.textContent = '复查失败';
+      } finally {
+        setBusy(false);
+        stopBtn.disabled = true;
+      }
+    }
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.onload = () => {
+          const bytes = new Uint8Array(reader.result);
+          let binary = '';
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+          }
+          resolve(btoa(binary));
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    async function downloadBlob(resp, filename) {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    phonesEl.addEventListener('input', () => {
+      updateInputCount();
+      updateDashboard();
+    });
+
+    importBtn.addEventListener('click', async () => {
+      const file = excelFile.files?.[0];
+      if (!file) {
+        showError('请选择文件');
+        return;
+      }
+      clearError();
+      importBtn.disabled = true;
+      try {
+        const fileBase64 = await readFileAsBase64(file);
+        const resp = await fetch('/api/import.xlsx', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fileBase64 })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || '导入失败');
+        phonesEl.value = data.phones.join('\n');
+        updateInputCount();
+        updateDashboard();
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        importBtn.disabled = false;
+      }
+    });
+
     runBtn.addEventListener('click', async () => {
-      const phones = phonesEl.value.trim();
+      const phones = normalizeInputPhones();
       const delayMs = Number(delayEl.value || 1500);
       const concurrency = Number(concurrencyEl.value || 1);
       const batchSize = Number(batchSizeEl.value || 80);
-      const batchPauseMs = Number(batchPauseEl.value || 5000);
-      if (!phones) {
-        alert('请先输入号码');
+      const batchPauseMs = Number(batchPauseEl.value || 15000);
+      if (!phones.length) {
+        showError('请先输入号码');
         return;
       }
 
       rows = [];
       currentJobId = null;
       userStopped = false;
-      resultsEl.innerHTML = '';
-      summaryEl.innerHTML = '';
+      autoRecheckStarted = false;
+      finalDone = false;
+      startedAt = Date.now();
       logPathEl.textContent = '';
-      errorBox.style.display = 'none';
-      errorBox.textContent = '';
-      statusEl.textContent = '创建任务中...';
-      exportBtn.disabled = true;
-      recheckBtn.disabled = true;
-      runBtn.disabled = true;
-      stopBtn.disabled = false;
+      clearError();
+      setBusy(true);
+      statusPill.textContent = '创建任务';
+      updateDashboard({ title: '创建任务中', detail: `0 / ${phones.length}`, totalOverride: phones.length });
 
       try {
         const createResp = await fetch('/api/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phones, delayMs, concurrency, batchSize, batchPauseMs })
+          body: JSON.stringify({ phones: phones.join('\n'), delayMs, concurrency, batchSize, batchPauseMs })
         });
         const createData = await createResp.json();
         if (!createResp.ok) throw new Error(createData.error || '创建任务失败');
         currentJobId = createData.jobId;
-        statusEl.textContent = `任务已创建，jobId=${currentJobId}`;
-        logPathEl.textContent = createData.logFile ? `本地日志: ${createData.logFile}` : '';
+        logPathEl.textContent = createData.logFile ? `日志: ${createData.logFile}` : '';
+        logBtn.disabled = false;
         connectStream(currentJobId);
       } catch (e) {
-        errorBox.style.display = 'block';
-        errorBox.textContent = e.message;
-        statusEl.textContent = '创建任务失败';
+        showError(e.message);
+        statusPill.textContent = '创建失败';
         cleanupStream();
       }
     });
 
     stopBtn.addEventListener('click', () => {
       userStopped = true;
-      statusEl.textContent = '已手动停止监听';
+      statusPill.textContent = '已停止监听';
       cleanupStream();
+      updateDashboard({ title: '已停止监听' });
     });
 
     exportBtn.addEventListener('click', async () => {
@@ -317,46 +817,25 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ results: rows })
       });
-      if (!resp.ok) { alert('导出失败'); return; }
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'facebook-check-results.xlsx';
-      a.click();
-      URL.revokeObjectURL(url);
-    });
-
-    recheckBtn.addEventListener('click', async () => {
-      const targets = rows.filter(r => r.needsRecheck || r.status === 'UNKNOWN' || r.status === 'ERROR').map(r => r.phone);
-      if (!targets.length) { alert('没有待复查号码'); return; }
-      statusEl.textContent = `复查中，共 ${targets.length} 个`;
-      errorBox.style.display = 'none';
-      errorBox.textContent = '';
-
-      const resp = await fetch('/api/recheck', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phones: targets.join('\n'), delayMs: Number(delayEl.value || 1500), concurrency: Number(concurrencyEl.value || 1) })
-      });
-
-      const data = await resp.json();
       if (!resp.ok) {
-        errorBox.style.display = 'block';
-        errorBox.textContent = data.error || '复查失败';
-        statusEl.textContent = '复查失败';
+        showError('导出失败');
         return;
       }
-
-      for (const updated of data.results) {
-        const idx = rows.findIndex(r => r.phone === updated.phone);
-        if (idx >= 0) rows[idx] = { ...rows[idx], ...updated, index: rows[idx].index };
-      }
-      rows.sort((a, b) => a.index - b.index);
-      renderSummary(computeSummary(), '复查完成');
-      renderTable();
-      statusEl.textContent = '复查完成';
+      await downloadBlob(resp, 'facebook-check-results.xlsx');
     });
+
+    logBtn.addEventListener('click', async () => {
+      if (!currentJobId) return;
+      const resp = await fetch(`/api/jobs/${currentJobId}/logs`);
+      if (!resp.ok) {
+        showError('日志导出失败');
+        return;
+      }
+      await downloadBlob(resp, `facebook-check-${currentJobId}.jsonl`);
+    });
+
+    updateInputCount();
+    updateDashboard();
   </script>
 </body>
 </html>
