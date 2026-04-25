@@ -12,6 +12,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const jobs = new Map();
 const LOG_DIR = path.join(__dirname, 'logs');
+const MAX_JOB_CONCURRENCY = 6;
+const MAX_RECHECK_CONCURRENCY = 2;
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -55,6 +57,8 @@ function createSummary(results) {
     noFb: results.filter(r => r.status === 'NO_FB').length,
     unknown: results.filter(r => r.status === 'UNKNOWN').length,
     error: results.filter(r => r.status === 'ERROR').length,
+    needsRecheck: results.filter(r => r.needsRecheck).length,
+    lowConfidence: results.filter(r => r.confidence === 'low').length,
   };
 }
 
@@ -79,6 +83,8 @@ function compactResultForLog(result) {
     urlChanged: result.urlChanged,
     visibleTextSnippet: result.visibleTextSnippet,
     profile: result.profile,
+    confidence: result.confidence,
+    needsRecheck: !!result.needsRecheck,
     observationFlags: result.observationFlags || [],
     error: result.error,
     checkedAt: result.checkedAt,
@@ -103,12 +109,21 @@ async function appendJobLog(job, event, data = {}) {
 
 function addObservationFlags(result) {
   const flags = [];
+  let confidence = 'high';
   if (result.index > 100) flags.push('after_first_100');
   if (result.index > 100 && result.status === 'HAS_FB' && result.matchedRule === 'url_changed') {
     flags.push('after_100_has_fb_by_url_changed_only');
+    flags.push('needs_recheck');
+    confidence = 'low';
   }
-  if (result.status === 'UNKNOWN' || result.status === 'ERROR') flags.push('needs_recheck');
-  return { ...result, observationFlags: flags };
+  if (result.status === 'HAS_FB' && result.matchedRule === 'url_changed') {
+    confidence = result.index > 100 ? 'low' : 'medium';
+  }
+  if (result.status === 'UNKNOWN' || result.status === 'ERROR') {
+    flags.push('needs_recheck');
+    confidence = 'low';
+  }
+  return { ...result, confidence, needsRecheck: flags.includes('needs_recheck'), observationFlags: [...new Set(flags)] };
 }
 
 const USER_AGENTS = [
@@ -348,9 +363,9 @@ async function startJob(job) {
 app.post('/api/jobs', async (req, res) => {
   const phones = normalizePhones(req.body?.phones || '');
   const delayMs = Math.max(300, Math.min(Number(req.body?.delayMs || 1500), 10000));
-  const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), 4));
+  const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), MAX_JOB_CONCURRENCY));
   const batchSize = Math.max(10, Math.min(Number(req.body?.batchSize || 100), 200));
-  const batchPauseMs = Math.max(0, Math.min(Number(req.body?.batchPauseMs || 5000), 120000));
+  const batchPauseMs = Math.max(0, Math.min(Number(req.body?.batchPauseMs || 15000), 120000));
 
   if (!phones.length) return res.status(400).json({ error: 'No phones provided' });
 
@@ -421,10 +436,10 @@ app.get('/api/jobs/:jobId/stream', async (req, res) => {
 app.post('/api/recheck', async (req, res) => {
   const phones = normalizePhones(req.body?.phones || '');
   const delayMs = Math.max(300, Math.min(Number(req.body?.delayMs || 1500), 10000));
-  const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), 4));
+  const concurrency = Math.max(1, Math.min(Number(req.body?.concurrency || 1), MAX_RECHECK_CONCURRENCY));
   if (!phones.length) return res.status(400).json({ error: 'No phones provided' });
   try {
-    const results = await runChecks({ phones, delayMs, concurrency });
+    const results = (await runChecks({ phones, delayMs, concurrency })).map(addObservationFlags);
     res.json({ summary: createSummary(results), results });
   } catch (e) {
     res.status(500).json({ error: String(e && e.stack ? e.stack : e) });
@@ -441,6 +456,9 @@ app.post('/api/export.xlsx', async (req, res) => {
     Status: r.status,
     Reason: r.reason,
     MatchedRule: r.matchedRule || '',
+    Confidence: r.confidence || '',
+    NeedsRecheck: r.needsRecheck ? 'true' : 'false',
+    ObservationFlags: Array.isArray(r.observationFlags) ? r.observationFlags.join(',') : '',
     Title: r.title || '',
     InitialUrl: r.initialUrl || '',
     FinalUrl: r.finalUrl || '',

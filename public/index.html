@@ -35,16 +35,18 @@
     <label>并发</label>
     <select id="concurrency">
       <option value="1">1</option>
-      <option value="2" selected>2</option>
+      <option value="2">2</option>
       <option value="3">3</option>
-      <option value="4">4</option>
+      <option value="4" selected>4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
     </select>
 
     <label>每批数量</label>
     <input id="batchSize" type="number" value="80" min="10" max="200" />
 
     <label>批次暂停(ms)</label>
-    <input id="batchPauseMs" type="number" value="5000" min="0" max="120000" />
+    <input id="batchPauseMs" type="number" value="15000" min="0" max="120000" />
 
     <button id="runBtn">开始检测</button>
     <button id="stopBtn" disabled>停止监听</button>
@@ -87,6 +89,8 @@
         noFb: rows.filter(r => r.status === 'NO_FB').length,
         unknown: rows.filter(r => r.status === 'UNKNOWN').length,
         error: rows.filter(r => r.status === 'ERROR').length,
+        needsRecheck: rows.filter(r => r.needsRecheck).length,
+        lowConfidence: rows.filter(r => r.confidence === 'low').length,
       };
     }
 
@@ -94,10 +98,10 @@
       summaryEl.innerHTML = `
         <strong>汇总</strong><br>
         ${progressText}<br>
-        总数: ${summary.total} / 有FB: ${summary.hasFb} / 无FB: ${summary.noFb} / 待复查: ${summary.unknown} / 异常: ${summary.error}
+        总数: ${summary.total} / 有FB: ${summary.hasFb} / 无FB: ${summary.noFb} / 不确定: ${summary.unknown} / 异常: ${summary.error} / 待复查: ${summary.needsRecheck || 0} / 低置信: ${summary.lowConfidence || 0}
       `;
       exportBtn.disabled = rows.length === 0;
-      recheckBtn.disabled = !rows.some(r => r.status === 'UNKNOWN' || r.status === 'ERROR');
+      recheckBtn.disabled = !rows.some(r => r.needsRecheck || r.status === 'UNKNOWN' || r.status === 'ERROR');
     }
 
     function renderTable() {
@@ -109,6 +113,9 @@
           <td>
             ${r.reason || ''}
             <div class="small">rule: ${r.matchedRule || ''}</div>
+            <div class="small">confidence: ${r.confidence || ''}</div>
+            <div class="small">needsRecheck: ${r.needsRecheck ? 'true' : 'false'}</div>
+            <div class="small">flags: ${Array.isArray(r.observationFlags) ? r.observationFlags.join(',') : ''}</div>
             <div class="small">title: ${r.title || ''}</div>
             <div class="small">urlChanged: ${r.urlChanged ? 'true' : 'false'}</div>
             <div class="small">ua: ${r.profile?.userAgent || ''}</div>
@@ -321,7 +328,7 @@
     });
 
     recheckBtn.addEventListener('click', async () => {
-      const targets = rows.filter(r => r.status === 'UNKNOWN' || r.status === 'ERROR').map(r => r.phone);
+      const targets = rows.filter(r => r.needsRecheck || r.status === 'UNKNOWN' || r.status === 'ERROR').map(r => r.phone);
       if (!targets.length) { alert('没有待复查号码'); return; }
       statusEl.textContent = `复查中，共 ${targets.length} 个`;
       errorBox.style.display = 'none';
@@ -343,7 +350,7 @@
 
       for (const updated of data.results) {
         const idx = rows.findIndex(r => r.phone === updated.phone);
-        if (idx >= 0) rows[idx] = { ...rows[idx], ...updated };
+        if (idx >= 0) rows[idx] = { ...rows[idx], ...updated, index: rows[idx].index };
       }
       rows.sort((a, b) => a.index - b.index);
       renderSummary(computeSummary(), '复查完成');
