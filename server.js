@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
 import { chromium } from 'playwright';
 import XLSX from 'xlsx';
 import crypto from 'crypto';
@@ -10,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const jobs = new Map();
+const LOG_DIR = path.join(__dirname, 'logs');
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -54,6 +56,59 @@ function createSummary(results) {
     unknown: results.filter(r => r.status === 'UNKNOWN').length,
     error: results.filter(r => r.status === 'ERROR').length,
   };
+}
+
+function safeTimestamp(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+async function ensureLogDir() {
+  await fs.mkdir(LOG_DIR, { recursive: true });
+}
+
+function compactResultForLog(result) {
+  return {
+    index: result.index,
+    phone: result.phone,
+    status: result.status,
+    reason: result.reason,
+    matchedRule: result.matchedRule,
+    title: result.title,
+    initialUrl: result.initialUrl,
+    finalUrl: result.finalUrl,
+    urlChanged: result.urlChanged,
+    visibleTextSnippet: result.visibleTextSnippet,
+    profile: result.profile,
+    observationFlags: result.observationFlags || [],
+    error: result.error,
+    checkedAt: result.checkedAt,
+  };
+}
+
+async function appendJobLog(job, event, data = {}) {
+  if (!job.logFile) return;
+  const line = JSON.stringify({
+    at: new Date().toISOString(),
+    event,
+    jobId: job.id,
+    total: job.total,
+    processed: job.results.length,
+    currentBatch: job.currentBatch,
+    totalBatches: job.totalBatches,
+    summary: createSummary(job.results),
+    ...data,
+  });
+  await fs.appendFile(job.logFile, `${line}\n`, 'utf8');
+}
+
+function addObservationFlags(result) {
+  const flags = [];
+  if (result.index > 100) flags.push('after_first_100');
+  if (result.index > 100 && result.status === 'HAS_FB' && result.matchedRule === 'url_changed') {
+    flags.push('after_100_has_fb_by_url_changed_only');
+  }
+  if (result.status === 'UNKNOWN' || result.status === 'ERROR') flags.push('needs_recheck');
+  return { ...result, observationFlags: flags };
 }
 
 const USER_AGENTS = [
@@ -105,6 +160,7 @@ function jobSnapshot(job) {
     batchPauseMs: job.batchPauseMs,
     currentBatch: job.currentBatch,
     totalBatches: job.totalBatches,
+    logFile: job.logFile,
   };
 }
 
@@ -192,9 +248,10 @@ async function runChecks({ phones, delayMs = 2000, concurrency = 1, onResult }) 
   return results.filter(Boolean).sort((a, b) => a.index - b.index);
 }
 
-function createJob({ phones, delayMs, concurrency, batchSize, batchPauseMs }) {
+async function createJob({ phones, delayMs, concurrency, batchSize, batchPauseMs }) {
   const id = crypto.randomUUID();
   const batches = chunkArray(phones, batchSize);
+  await ensureLogDir();
   const job = {
     id,
     phones,
@@ -212,6 +269,7 @@ function createJob({ phones, delayMs, concurrency, batchSize, batchPauseMs }) {
     listeners: new Set(),
     createdAt: Date.now(),
     lastEventAt: Date.now(),
+    logFile: path.join(LOG_DIR, `${safeTimestamp()}-${id}.jsonl`),
   };
   jobs.set(id, job);
   return job;
@@ -228,13 +286,24 @@ function emitJob(job, event, data) {
 async function startJob(job) {
   if (job.status !== 'pending') return;
   job.status = 'running';
-  emitJob(job, 'start', { ...jobSnapshot(job) });
 
   try {
+    await appendJobLog(job, 'start', {
+      settings: {
+        delayMs: job.delayMs,
+        concurrency: job.concurrency,
+        batchSize: job.batchSize,
+        batchPauseMs: job.batchPauseMs,
+      },
+      phones: job.phones,
+    });
+    emitJob(job, 'start', { ...jobSnapshot(job) });
+
     let globalIndexOffset = 0;
     for (let b = 0; b < job.batches.length; b++) {
       job.currentBatch = b + 1;
       const batchPhones = job.batches[b];
+      await appendJobLog(job, 'batch_start', { batchIndex: b + 1, batchCount: job.batches.length, batchSize: batchPhones.length });
       emitJob(job, 'batch', { ...jobSnapshot(job), batchIndex: b + 1, batchCount: job.batches.length, batchSize: batchPhones.length, message: `starting batch ${b + 1}/${job.batches.length}` });
 
       const batchResults = await runChecks({
@@ -242,31 +311,36 @@ async function startJob(job) {
         delayMs: job.delayMs,
         concurrency: job.concurrency,
         onResult: async (result) => {
-          const adjusted = { ...result, index: result.index + globalIndexOffset };
+          const adjusted = addObservationFlags({ ...result, index: result.index + globalIndexOffset });
           job.results = job.results.filter(r => r.index !== adjusted.index).concat(adjusted).sort((a, b) => a.index - b.index);
+          await appendJobLog(job, 'result', { result: compactResultForLog(adjusted) });
           emitJob(job, 'result', { result: adjusted, summary: createSummary(job.results), progress: { current: job.results.length, total: job.total }, ...jobSnapshot(job) });
         }
       });
 
-      const adjustedBatch = batchResults.map(r => ({ ...r, index: r.index + globalIndexOffset }));
+      const adjustedBatch = batchResults.map(r => addObservationFlags({ ...r, index: r.index + globalIndexOffset }));
       for (const r of adjustedBatch) {
         job.results = job.results.filter(x => x.index !== r.index).concat(r).sort((a, b) => a.index - b.index);
       }
       globalIndexOffset += batchPhones.length;
 
+      await appendJobLog(job, 'batch_done', { batchIndex: b + 1, batchCount: job.batches.length, batchSize: batchPhones.length });
       emitJob(job, 'batch', { ...jobSnapshot(job), batchIndex: b + 1, batchCount: job.batches.length, batchSize: batchPhones.length, message: `finished batch ${b + 1}/${job.batches.length}` });
 
       if (b < job.batches.length - 1 && job.batchPauseMs > 0) {
+        await appendJobLog(job, 'batch_pause', { nextBatch: b + 2, pauseMs: job.batchPauseMs });
         emitJob(job, 'pause', { ...jobSnapshot(job), nextBatch: b + 2, pauseMs: job.batchPauseMs, message: `pausing ${job.batchPauseMs}ms before next batch` });
         await new Promise(resolve => setTimeout(resolve, job.batchPauseMs));
       }
     }
 
     job.status = 'done';
+    await appendJobLog(job, 'done', { results: job.results.map(compactResultForLog) });
     emitJob(job, 'done', { ...jobSnapshot(job), results: job.results, progress: { current: job.results.length, total: job.total } });
   } catch (e) {
     job.status = 'error';
     job.error = String(e && e.stack ? e.stack : e);
+    await appendJobLog(job, 'error', { error: job.error });
     emitJob(job, 'error', { ...jobSnapshot(job), error: job.error });
   }
 }
@@ -280,9 +354,17 @@ app.post('/api/jobs', async (req, res) => {
 
   if (!phones.length) return res.status(400).json({ error: 'No phones provided' });
 
-  const job = createJob({ phones, delayMs, concurrency, batchSize, batchPauseMs });
-  startJob(job);
-  res.json({ ...jobSnapshot(job) });
+  try {
+    const job = await createJob({ phones, delayMs, concurrency, batchSize, batchPauseMs });
+    startJob(job).catch((e) => {
+      job.status = 'error';
+      job.error = String(e && e.stack ? e.stack : e);
+      emitJob(job, 'error', { ...jobSnapshot(job), error: job.error });
+    });
+    res.json({ ...jobSnapshot(job) });
+  } catch (e) {
+    res.status(500).json({ error: String(e && e.stack ? e.stack : e) });
+  }
 });
 
 app.get('/api/jobs/:jobId', async (req, res) => {

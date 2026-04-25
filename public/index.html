@@ -53,6 +53,7 @@
   </div>
 
   <div id="status" style="margin-top:16px;"></div>
+  <div id="logPath" class="small" style="margin-top:8px;"></div>
   <pre id="errorBox" style="margin-top:12px; white-space:pre-wrap; color:#b42318; background:#fff5f5; padding:12px; border:1px solid #f5c2c7; display:none;"></pre>
   <div id="summary" style="margin-top:12px;"></div>
   <div id="results"></div>
@@ -68,6 +69,7 @@
     const batchSizeEl = document.getElementById('batchSize');
     const batchPauseEl = document.getElementById('batchPauseMs');
     const statusEl = document.getElementById('status');
+    const logPathEl = document.getElementById('logPath');
     const summaryEl = document.getElementById('summary');
     const resultsEl = document.getElementById('results');
     const errorBox = document.getElementById('errorBox');
@@ -193,6 +195,7 @@
       es.addEventListener('start', (e) => {
         const data = JSON.parse(e.data);
         statusEl.textContent = `检测中，总数 ${data.total}，并发 ${data.concurrency}，jobId=${data.jobId}`;
+        logPathEl.textContent = data.logFile ? `本地日志: ${data.logFile}` : '';
         renderSummary(data.summary || { total: 0, hasFb: 0, noFb: 0, unknown: 0, error: 0 }, `进度: ${data.progress?.current || 0} / ${data.progress?.total || data.total} | 批次: ${data.currentBatch || 0} / ${data.totalBatches || 0}`);
       });
 
@@ -265,6 +268,7 @@
       userStopped = false;
       resultsEl.innerHTML = '';
       summaryEl.innerHTML = '';
+      logPathEl.textContent = '';
       errorBox.style.display = 'none';
       errorBox.textContent = '';
       statusEl.textContent = '创建任务中...';
@@ -283,6 +287,7 @@
         if (!createResp.ok) throw new Error(createData.error || '创建任务失败');
         currentJobId = createData.jobId;
         statusEl.textContent = `任务已创建，jobId=${currentJobId}`;
+        logPathEl.textContent = createData.logFile ? `本地日志: ${createData.logFile}` : '';
         connectStream(currentJobId);
       } catch (e) {
         errorBox.style.display = 'block';
